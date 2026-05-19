@@ -124,8 +124,10 @@ def export_day(target_date: date) -> dict:
 
 
 def export_performance() -> None:
-    """全期間の収支サマリーを docs/data/performance.json に保存する。"""
+    """全期間の収支サマリー＋日別実績を docs/data/performance.json に保存する。"""
     _ensure_data_dir()
+    from src.ingestion.database import get_engine
+    from sqlalchemy import text as sa_text
 
     with get_session() as session:
         all_bets = session.query(Bet).filter(Bet.is_pass == False).all()
@@ -153,6 +155,34 @@ def export_performance() -> None:
                 "avg_odds": bt.avg_odds,
             }
 
+    # 日別実績（直近90日・判定済みのみ）
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sa_text("""
+            SELECT r.race_date,
+                   COUNT(*) AS total_bets,
+                   SUM(CASE WHEN b.is_hit = 1 THEN 1 ELSE 0 END) AS hits,
+                   SUM(b.recommended_amount) AS invested,
+                   SUM(CASE WHEN b.is_hit = 1 THEN b.actual_payout ELSE 0 END) AS returned
+            FROM bets b
+            JOIN races r ON b.race_id = r.id
+            WHERE b.is_pass = 0 AND b.is_hit IS NOT NULL
+            GROUP BY r.race_date
+            ORDER BY r.race_date DESC
+            LIMIT 90
+        """)).fetchall()
+    daily = [
+        {
+            "date": str(r[0]),
+            "bets": r[1],
+            "hits": r[2] or 0,
+            "invested": r[3] or 0,
+            "returned": r[4] or 0,
+            "roi": round((r[4] or 0) / r[3], 4) if r[3] else None,
+        }
+        for r in rows
+    ]
+
     perf = {
         "total_bets": len(all_bets),
         "settled_bets": len(settled),
@@ -162,6 +192,7 @@ def export_performance() -> None:
         "returned": returned,
         "roi": round(returned / invested, 4) if invested else None,
         "backtest": backtest,
+        "daily": daily,
     }
 
     path = DATA_DIR / "performance.json"

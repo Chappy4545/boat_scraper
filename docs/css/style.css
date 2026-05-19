@@ -687,3 +687,38 @@ body {
   from { opacity: 0; transform: translateX(-50%) translateY(6px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ── 日別実績テーブル ── */
+.daily-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin-top: .25rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.daily-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .8rem;
+  white-space: nowrap;
+}
+.daily-table thead th {
+  background: var(--surface2);
+  color: var(--muted);
+  font-weight: 600;
+  padding: .45rem .6rem;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+.daily-table tbody tr {
+  border-bottom: 1px solid var(--border);
+}
+.daily-table tbody tr:last-child { border-bottom: none; }
+.daily-table tbody tr:hover { background: var(--surface2); }
+.daily-table td {
+  padding: .4rem .6rem;
+  color: var(--text);
+}
+.val-good { color: var(--green) !important; }
+.val-bad  { color: var(--red) !important; }
+.val-gold { color: var(--gold) !important; }

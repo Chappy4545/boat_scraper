@@ -32,6 +32,25 @@ $trigger4 = New-ScheduledTaskTrigger -Daily -At "22:00"
 Register-ScheduledTask -TaskName "BoatRacer_CollectResult" -Action $action4 -Trigger $trigger4 -Settings $settings -Force
 Write-Host "✓ BoatRacer_CollectResult 登録完了 (毎晩22:00)"
 
+# 毎晩22:30 - 的中判定 → JSONエクスポート → GitHubへPush
+$action5 = New-ScheduledTaskAction -Execute $python -Argument "main.py judge" -WorkingDirectory $workDir
+$trigger5 = New-ScheduledTaskTrigger -Daily -At "22:30"
+Register-ScheduledTask -TaskName "BoatRacer_Judge" -Action $action5 -Trigger $trigger5 -Settings $settings -Force
+Write-Host "✓ BoatRacer_Judge 登録完了 (毎晩22:30)"
+
+# 毎晩22:45 - 判定後のJSONをPush（夜間更新）
+$action6 = New-ScheduledTaskAction -Execute $ps -Argument "-ExecutionPolicy Bypass -File push_daily.ps1" -WorkingDirectory $workDir
+$trigger6 = New-ScheduledTaskTrigger -Daily -At "22:45"
+Register-ScheduledTask -TaskName "BoatRacer_PushNight" -Action $action6 -Trigger $trigger6 -Settings $settings -Force
+Write-Host "✓ BoatRacer_PushNight 登録完了 (毎晩22:45)"
+
+# 毎週日曜9:00 - モデル再学習（週次PDCA）
+$action7 = New-ScheduledTaskAction -Execute $python -Argument "main.py train" -WorkingDirectory $workDir
+$triggerWeekly = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At "09:00"
+$settingsTrain = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable
+Register-ScheduledTask -TaskName "BoatRacer_Train" -Action $action7 -Trigger $triggerWeekly -Settings $settingsTrain -Force
+Write-Host "✓ BoatRacer_Train 登録完了 (毎週日曜9:00)"
+
 Write-Host ""
 Write-Host "登録済みタスク確認:"
 Get-ScheduledTask | Where-Object TaskName -like "BoatRacer_*" | Select-Object TaskName, State

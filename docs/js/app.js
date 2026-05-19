@@ -570,6 +570,37 @@ async function loadPerf() {
             <div class="stat-card__value">${(bt.avg_odds||0).toFixed(1)}x</div></div>
         </div>`;
     }
+
+    // 日別実績テーブル
+    const daily = data?.daily ?? [];
+    if (daily.length > 0) {
+      const rows = daily.map(d => {
+        const roi = d.roi ?? 0;
+        const hitRate = d.bets > 0 ? d.hits / d.bets : 0;
+        const roiCls = roi >= 1 ? "val-good" : roi > 0 ? "" : "val-bad";
+        return `<tr>
+          <td>${d.date}</td>
+          <td style="text-align:center">${d.bets}</td>
+          <td style="text-align:center">${d.hits}</td>
+          <td style="text-align:center;color:var(--gold)">${(hitRate*100).toFixed(0)}%</td>
+          <td style="text-align:right">¥${(d.invested||0).toLocaleString()}</td>
+          <td style="text-align:right">¥${(d.returned||0).toLocaleString()}</td>
+          <td style="text-align:right;font-weight:600" class="${roiCls}">${roi ? (roi*100).toFixed(0)+"%" : "—"}</td>
+        </tr>`;
+      }).join("");
+      html += `
+        <p class="info-card__label" style="margin:.9rem 0 .5rem;">日別実績</p>
+        <div class="daily-table-wrap">
+          <table class="daily-table">
+            <thead><tr>
+              <th>日付</th><th>件数</th><th>的中</th><th>的中率</th>
+              <th>投資</th><th>回収</th><th>ROI</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    }
+
     container.innerHTML = html || '<div class="empty">データなし</div>';
   } catch (e) {
     container.innerHTML = `<div class="empty">取得失敗 (${e.message})</div>`;

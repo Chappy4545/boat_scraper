@@ -8,6 +8,7 @@
   python main.py backfill_grades                    # 既存レースのグレード情報をバックフィル
   python main.py train [DATE_FROM] [DATE_TO]        # モデル学習
   python main.py predict [DATE]                     # 予測実行 → 自動でexport
+  python main.py judge [DATE]                       # 的中判定 → 自動でexport更新
   python main.py export [DATE]                      # 静的JSONをdocs/data/に出力
   python main.py backtest DATE_FROM DATE_TO         # バックテスト
 """
@@ -233,6 +234,45 @@ def cmd_predict(target_date: date | None = None):
     export_performance()
 
 
+def cmd_judge(target_date: date | None = None):
+    """当日の買い目に的中/外れを記録する。22:00 collect の後に実行する。"""
+    from src.ingestion.database import init_db, get_session
+    from src.ingestion.models import Bet, Race, Payout, RaceResult
+    config = load_config()
+    init_db(config)
+    d = target_date or date.today()
+
+    with get_session() as session:
+        pairs = (
+            session.query(Bet, Race)
+            .join(Race, Bet.race_id == Race.id)
+            .filter(Race.race_date == d, Bet.is_pass == False, Bet.is_hit == None)
+            .all()
+        )
+        judged = 0
+        for bet, race in pairs:
+            has_result = session.query(RaceResult).filter(
+                RaceResult.race_id == race.id
+            ).count() > 0
+            if not has_result:
+                continue
+            payout = session.query(Payout).filter(
+                Payout.race_id == race.id,
+                Payout.bet_type == bet.bet_type,
+                Payout.combination == bet.combination,
+            ).first()
+            bet.is_hit = payout is not None
+            bet.actual_payout = payout.payout if payout else None
+            judged += 1
+
+    logger.info(f"的中判定完了: {d} {judged}件")
+
+    # 判定後にエクスポートを更新
+    from src.export import export_day, export_performance
+    export_day(d)
+    export_performance()
+
+
 def cmd_backfill_grades(max_workers: int = 5):
     """grade=NULL の既存レースにグレード・レース種別・タイトルをバックフィルする。
     racelist URL のみフェッチ（オッズ・結果はスキップ）するため軽量。
@@ -353,6 +393,9 @@ def main():
     elif cmd == "predict":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_predict(d)
+    elif cmd == "judge":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_judge(d)
     elif cmd == "export":
         from src.export import export_day, export_performance
         from src.ingestion.database import init_db
