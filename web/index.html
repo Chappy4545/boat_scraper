@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0a1628" />
+  <meta name="description" content="期待値ベースのボートレース予想システム" />
+  <title>艇予想</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png" />
+</head>
+<body>
+  <div class="app">
+
+    <!-- ── サイドバー（PC 専用）── -->
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar__logo">🚤 艇予想</div>
+      <ul class="sidebar__nav">
+        <li><button class="snav-btn active" data-page="bets">
+          <span class="snav-icon">🎯</span><span>買い目</span>
+        </button></li>
+        <li><button class="snav-btn" data-page="races">
+          <span class="snav-icon">🏁</span><span>レース</span>
+        </button></li>
+        <li><button class="snav-btn" data-page="perf">
+          <span class="snav-icon">📊</span><span>収支</span>
+        </button></li>
+        <li><button class="snav-btn" data-page="settings">
+          <span class="snav-icon">⚙️</span><span>設定</span>
+        </button></li>
+      </ul>
+    </nav>
+
+    <!-- ── メインエリア ── -->
+    <div class="app-main">
+
+      <header class="app-header">
+        <span class="app-header__logo">🚤 艇予想</span>
+        <div class="date-nav">
+          <button id="prev-date" class="icon-btn" title="前日">‹</button>
+          <span id="current-date" class="date-label"></span>
+          <button id="next-date" class="icon-btn" title="翌日">›</button>
+        </div>
+      </header>
+
+      <div class="app-content">
+
+        <!-- 買い目 -->
+        <section id="page-bets" class="page active">
+          <div class="page-head">
+            <h2 class="page-title">推奨買い目</h2>
+            <span class="badge ev-badge">EV ≥ 1.10</span>
+          </div>
+          <div id="bets-filter-area"></div>
+          <div id="bets-summary"></div>
+          <div id="bet-list" class="card-list"></div>
+        </section>
+
+        <!-- レース一覧 -->
+        <section id="page-races" class="page">
+          <div id="races-filter-area"></div>
+          <div id="race-list" class="card-list"></div>
+        </section>
+
+        <!-- 収支 -->
+        <section id="page-perf" class="page">
+          <div class="page-head"><h2 class="page-title">実績・収支</h2></div>
+          <div id="perf-content"></div>
+        </section>
+
+        <!-- 設定 -->
+        <section id="page-settings" class="page">
+          <div class="page-head"><h2 class="page-title">システム設定</h2></div>
+          <div id="settings-content"></div>
+        </section>
+
+      </div><!-- /app-content -->
+    </div><!-- /app-main -->
+
+    <!-- ── 下部タブ（モバイル専用）── -->
+    <nav class="bottom-nav">
+      <button class="bnav-btn active" data-page="bets">
+        <span class="bnav-icon">🎯</span>
+        <span class="bnav-label">買い目</span>
+      </button>
+      <button class="bnav-btn" data-page="races">
+        <span class="bnav-icon">🏁</span>
+        <span class="bnav-label">レース</span>
+      </button>
+      <button class="bnav-btn" data-page="perf">
+        <span class="bnav-icon">📊</span>
+        <span class="bnav-label">収支</span>
+      </button>
+      <button class="bnav-btn" data-page="settings">
+        <span class="bnav-icon">⚙️</span>
+        <span class="bnav-label">設定</span>
+      </button>
+    </nav>
+
+  </div><!-- /app -->
+
+  <!-- モーダル -->
+  <div id="modal" class="modal hidden">
+    <div class="modal__backdrop"></div>
+    <div class="modal__content">
+      <button class="modal__close">✕</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

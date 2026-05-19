@@ -1,0 +1,74 @@
+database:
+  url: "sqlite:///data/boatrace.db"
+  echo: false
+
+scraping:
+  base_url: "https://www.boatrace.jp"
+  delay_seconds: 2.0
+  timeout: 30
+  max_retries: 3
+  cache_dir: "data/raw"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+stadiums:
+  "01": "桐生"
+  "02": "戸田"
+  "03": "江戸川"
+  "04": "平和島"
+  "05": "多摩川"
+  "06": "浜名湖"
+  "07": "蒲郡"
+  "08": "常滑"
+  "09": "津"
+  "10": "三国"
+  "11": "びわこ"
+  "12": "住之江"
+  "13": "尼崎"
+  "14": "鳴門"
+  "15": "丸亀"
+  "16": "児島"
+  "17": "宮島"
+  "18": "徳山"
+  "19": "下関"
+  "20": "若松"
+  "21": "芦屋"
+  "22": "福岡"
+  "23": "唐津"
+  "24": "大村"
+
+betting:
+  min_expected_value: 1.10
+  max_bets_per_race: 5
+  min_model_confidence: 0.35
+  min_odds: 1.5
+  max_odds: 50.0
+  bet_types:
+    - "2連複"
+    - "2連単"
+    - "3連複"
+    - "3連単"
+
+money_management:
+  initial_bankroll: 100000
+  strategy: "quarter_kelly"   # fixed | proportional | quarter_kelly
+  fixed_bet_amount: 200
+  max_bet_per_race: 2000
+  max_bet_per_day: 10000
+  max_drawdown_stop: 0.30    # 30% ドローダウンで停止
+  max_consecutive_losses_stop: 10
+
+model:
+  version: "v1"
+  cv_folds: 5
+  test_ratio: 0.20
+  random_state: 42
+  calibration: true
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  debug: false
+
+logging:
+  level: "INFO"
+  dir: "logs"

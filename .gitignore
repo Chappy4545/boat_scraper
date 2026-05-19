@@ -1,0 +1,35 @@
+# キャッシュ・一時ファイル
+data/raw/
+data/external/
+data/interim/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# ログ
+logs/*.log
+logs/*.log.zip
+
+# 環境
+.env
+.venv/
+venv/
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude内部ファイル
+.claude/
+
+# スクリプト（自動生成）
+logs/collect_odds_loop.sh
+run_collect_then_train.sh
