@@ -63,6 +63,54 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5):
     logger.info(f"データ収集完了: {summary}")
     _purge_raw_cache(config)
 
+    # 今日の収集時のみ、直近7日の未取得結果をキャッチアップ
+    if target_date is None or target_date == date.today():
+        _catchup_missed_results(max_workers=max_workers)
+
+
+def _catchup_missed_results(lookback_days: int = 7, max_workers: int = 5):
+    """直近N日のうち結果が未収集の日をまとめて収集・判定する。"""
+    from src.scraping.official import BoatRaceScraper
+    from src.ingestion.database import get_engine, get_session
+    from src.ingestion.saver import save_day
+    from sqlalchemy import text as sa_text
+    config = load_config()
+    engine = get_engine()
+    today = date.today()
+    targets = []
+
+    for i in range(1, lookback_days + 1):
+        d = today - timedelta(days=i)
+        with engine.connect() as conn:
+            race_cnt = conn.execute(
+                sa_text("SELECT COUNT(*) FROM races WHERE race_date = :d"),
+                {"d": str(d)}
+            ).scalar()
+            result_cnt = conn.execute(
+                sa_text("""SELECT COUNT(*) FROM race_results rr
+                           JOIN races r ON rr.race_id = r.id
+                           WHERE r.race_date = :d"""),
+                {"d": str(d)}
+            ).scalar()
+        # レースは存在するが結果がない日
+        if race_cnt > 0 and result_cnt == 0:
+            targets.append(d)
+
+    if not targets:
+        return
+
+    logger.info(f"キャッチアップ: {len(targets)}日分の結果を取得します {targets}")
+    for d in sorted(targets):
+        try:
+            with BoatRaceScraper(config) as scraper:
+                data = scraper.collect_day(d, max_workers=max_workers)
+            save_day(data)
+            logger.info(f"  キャッチアップ完了: {d}")
+            cmd_judge(d)
+        except Exception as e:
+            logger.error(f"  キャッチアップ失敗 {d}: {e}")
+    _purge_raw_cache(config)
+
 
 def cmd_collect_range(date_from: str, date_to: str,
                       max_minutes: int = 55, max_workers: int = 5,
