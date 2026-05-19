@@ -7,7 +7,8 @@
   python main.py collect_range DATE_FROM DATE_TO    # 期間一括収集（オッズスキップ・再開可能）
   python main.py backfill_grades                    # 既存レースのグレード情報をバックフィル
   python main.py train [DATE_FROM] [DATE_TO]        # モデル学習
-  python main.py predict [DATE]                     # 予測実行
+  python main.py predict [DATE]                     # 予測実行 → 自動でexport
+  python main.py export [DATE]                      # 静的JSONをdocs/data/に出力
   python main.py backtest DATE_FROM DATE_TO         # バックテスト
 """
 import sys
@@ -226,6 +227,11 @@ def cmd_predict(target_date: date | None = None):
 
     logger.info(f"予測完了: 推奨買い目 {bet_count} 件")
 
+    # 予測後に自動エクスポート
+    from src.export import export_day, export_performance
+    export_day(d)
+    export_performance()
+
 
 def cmd_backfill_grades(max_workers: int = 5):
     """grade=NULL の既存レースにグレード・レース種別・タイトルをバックフィルする。
@@ -347,6 +353,14 @@ def main():
     elif cmd == "predict":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_predict(d)
+    elif cmd == "export":
+        from src.export import export_day, export_performance
+        from src.ingestion.database import init_db
+        config = load_config()
+        init_db(config)
+        d = date.fromisoformat(args[1]) if len(args) > 1 else date.today()
+        export_day(d)
+        export_performance()
     elif cmd == "backtest":
         if len(args) < 3:
             print("使い方: python main.py backtest DATE_FROM DATE_TO")

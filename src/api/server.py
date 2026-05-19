@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 app = FastAPI(title="BoatRace Prediction API", version="0.1.0")
 
-WEB_DIR = Path(__file__).parent.parent.parent / "web"
+WEB_DIR = Path(__file__).parent.parent.parent / "docs"
 
 
 # ------------------------------------------------------------------
@@ -305,7 +305,10 @@ async def trigger_collect(background_tasks: BackgroundTasks, target_date: Option
 # PWA 静的ファイル配信
 # ------------------------------------------------------------------
 if WEB_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
+    for _sub in ("css", "js", "icons", "data"):
+        _d = WEB_DIR / _sub
+        _d.mkdir(parents=True, exist_ok=True)
+        app.mount(f"/{_sub}", StaticFiles(directory=str(_d)), name=_sub)
 
     @app.get("/manifest.json")
     def manifest():

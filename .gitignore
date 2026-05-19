@@ -1,3 +1,6 @@
+# データベース（大容量のためgit管理外）
+data/boatrace.db
+
 # キャッシュ・一時ファイル
 data/raw/
 data/external/

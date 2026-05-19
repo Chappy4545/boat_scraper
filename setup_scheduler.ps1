@@ -19,10 +19,17 @@ $trigger2 = New-ScheduledTaskTrigger -Daily -At "08:30"
 Register-ScheduledTask -TaskName "BoatRacer_Predict" -Action $action2 -Trigger $trigger2 -Settings $settings -Force
 Write-Host "✓ BoatRacer_Predict 登録完了 (毎朝8:30)"
 
+# 毎朝8:45 - GitHub Push（予測JSONをpush）
+$ps = "powershell.exe"
+$action3 = New-ScheduledTaskAction -Execute $ps -Argument "-ExecutionPolicy Bypass -File push_daily.ps1" -WorkingDirectory $workDir
+$trigger3 = New-ScheduledTaskTrigger -Daily -At "08:45"
+Register-ScheduledTask -TaskName "BoatRacer_Push" -Action $action3 -Trigger $trigger3 -Settings $settings -Force
+Write-Host "✓ BoatRacer_Push 登録完了 (毎朝8:45)"
+
 # 毎晩22:00 - 当日結果収集（的中判定のため）
-$action3 = New-ScheduledTaskAction -Execute $python -Argument "main.py collect" -WorkingDirectory $workDir
-$trigger3 = New-ScheduledTaskTrigger -Daily -At "22:00"
-Register-ScheduledTask -TaskName "BoatRacer_CollectResult" -Action $action3 -Trigger $trigger3 -Settings $settings -Force
+$action4 = New-ScheduledTaskAction -Execute $python -Argument "main.py collect" -WorkingDirectory $workDir
+$trigger4 = New-ScheduledTaskTrigger -Daily -At "22:00"
+Register-ScheduledTask -TaskName "BoatRacer_CollectResult" -Action $action4 -Trigger $trigger4 -Settings $settings -Force
 Write-Host "✓ BoatRacer_CollectResult 登録完了 (毎晩22:00)"
 
 Write-Host ""
