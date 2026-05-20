@@ -107,6 +107,7 @@ def _catchup_missed_results(lookback_days: int = 7, max_workers: int = 5):
                 data = scraper.collect_day(d, max_workers=max_workers)
             save_day(data)
             logger.info(f"  キャッチアップ完了: {d}")
+            cmd_predict(d)
             cmd_judge(d)
         except Exception as e:
             logger.error(f"  キャッチアップ失敗 {d}: {e}")
