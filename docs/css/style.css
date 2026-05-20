@@ -783,3 +783,44 @@ body {
   color: var(--muted);
   margin-top: .15rem;
 }
+.yesterday-hits {
+  margin-top: .6rem;
+  border-top: 1px solid var(--border);
+  padding-top: .5rem;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+}
+.yesterday-hit-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-size: .8rem;
+  background: var(--bg2);
+  border-radius: 6px;
+  padding: .3rem .6rem;
+}
+.yesterday-hit-place {
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 4.5rem;
+}
+.yesterday-hit-type {
+  background: var(--accent);
+  color: #fff;
+  font-size: .7rem;
+  font-weight: 600;
+  padding: .1rem .35rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.yesterday-hit-combo {
+  font-weight: 700;
+  letter-spacing: .05em;
+  flex: 1;
+}
+.yesterday-hit-payout {
+  color: var(--good);
+  font-weight: 700;
+  white-space: nowrap;
+}

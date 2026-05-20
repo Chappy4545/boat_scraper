@@ -226,6 +226,19 @@ function renderYesterdayResult(yDate, bets) {
   const roiCls   = roi >= 1 ? "val-good" : "val-bad";
   const hitRate  = settled.length > 0 ? hits.length / settled.length : 0;
 
+  const BET_LABEL = { sanrentan:"3連単", sanrenfuku:"3連複", nirentan:"2連単", nirenfuku:"2連複" };
+
+  const hitsHtml = hits.length === 0 ? "" : `
+    <div class="yesterday-hits">
+      ${hits.map(b => `
+        <div class="yesterday-hit-row">
+          <span class="yesterday-hit-place">${b.stadium_name || ""} R${b.race_no}</span>
+          <span class="yesterday-hit-type">${BET_LABEL[b.bet_type] || b.bet_type}</span>
+          <span class="yesterday-hit-combo">${b.combination}</span>
+          <span class="yesterday-hit-payout">¥${(b.actual_payout || 0).toLocaleString()}</span>
+        </div>`).join("")}
+    </div>`;
+
   el.innerHTML = `
     <div class="yesterday-card" id="yesterday-card-click">
       <div class="yesterday-card__head">
@@ -250,6 +263,7 @@ function renderYesterdayResult(yDate, bets) {
           <div class="yesterday-stat__label">ROI</div>
         </div>
       </div>
+      ${hitsHtml}
     </div>`;
 
   document.getElementById("yesterday-card-click").addEventListener("click", () => {
