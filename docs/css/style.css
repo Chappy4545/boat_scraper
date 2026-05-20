@@ -722,3 +722,64 @@ body {
 .val-good { color: var(--green) !important; }
 .val-bad  { color: var(--red) !important; }
 .val-gold { color: var(--gold) !important; }
+
+/* ── 前日実績カード ── */
+.yesterday-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .65rem .9rem;
+  margin-bottom: .75rem;
+  cursor: pointer;
+  transition: background .15s;
+}
+.yesterday-card:hover { background: var(--surface2); }
+.yesterday-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: .5rem;
+}
+.yesterday-card__label {
+  font-size: .75rem;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.yesterday-card__date {
+  color: var(--accent-lt);
+  margin-left: .3rem;
+  font-weight: 700;
+}
+.yesterday-card__link {
+  font-size: .75rem;
+  color: var(--muted);
+}
+.yesterday-card__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .4rem;
+}
+.yesterday-stat {
+  text-align: center;
+  background: var(--bg2);
+  border-radius: 6px;
+  padding: .35rem .2rem;
+}
+.yesterday-stat__val {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.yesterday-stat__denom {
+  font-size: .7rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+.yesterday-stat__label {
+  font-size: .68rem;
+  color: var(--muted);
+  margin-top: .15rem;
+}

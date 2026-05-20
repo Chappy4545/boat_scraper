@@ -183,16 +183,20 @@ async function loadBets() {
 
   state._betsCache = [];
   state._racesCache = [];
+  const isToday = state.date === todayStr();
+  const yDate   = addDays(state.date, -1);
   try {
-    const [bets, races] = await Promise.all([
+    const [bets, races, yBets] = await Promise.all([
       api(`data/bets_${state.date}.json`),
       api(`data/races_${state.date}.json`).catch(() => []),
+      isToday ? api(`data/bets_${yDate}.json`).catch(() => []) : Promise.resolve([]),
     ]);
     state._betsCache = bets;
     state._racesCache = races;
 
+    renderYesterdayResult(yDate, yBets);
+
     if (!bets.length) {
-      // フィルターバーなし
       document.getElementById("bets-filter-area").innerHTML = "";
       document.getElementById("bets-summary").innerHTML = "";
       container.innerHTML = '<div class="empty">この日の推奨買い目はありません</div>';
@@ -203,10 +207,59 @@ async function loadBets() {
   } catch (e) {
     document.getElementById("bets-filter-area").innerHTML = "";
     document.getElementById("bets-summary").innerHTML = "";
+    document.getElementById("yesterday-result").innerHTML = "";
     container.innerHTML = e.message === "404"
       ? '<div class="empty">この日のデータがありません</div>'
       : `<div class="empty">取得失敗 (${e.message})</div>`;
   }
+}
+
+function renderYesterdayResult(yDate, bets) {
+  const el = document.getElementById("yesterday-result");
+  const settled = bets.filter(b => b.is_hit !== null && b.is_hit !== undefined);
+  if (!settled.length) { el.innerHTML = ""; return; }
+
+  const hits     = settled.filter(b => b.is_hit === true);
+  const invested = settled.reduce((s, b) => s + (b.recommended_amount || 0), 0);
+  const returned = hits.reduce((s, b) => s + (b.actual_payout || 0), 0);
+  const roi      = invested > 0 ? returned / invested : 0;
+  const roiCls   = roi >= 1 ? "val-good" : "val-bad";
+  const hitRate  = settled.length > 0 ? hits.length / settled.length : 0;
+
+  el.innerHTML = `
+    <div class="yesterday-card" id="yesterday-card-click">
+      <div class="yesterday-card__head">
+        <span class="yesterday-card__label">前日実績 <span class="yesterday-card__date">${fmtDate(yDate)}</span></span>
+        <span class="yesterday-card__link">詳細 ›</span>
+      </div>
+      <div class="yesterday-card__stats">
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val">${hits.length}<span class="yesterday-stat__denom">/${settled.length}</span></div>
+          <div class="yesterday-stat__label">的中</div>
+        </div>
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val">${(hitRate * 100).toFixed(0)}<span class="yesterday-stat__denom">%</span></div>
+          <div class="yesterday-stat__label">的中率</div>
+        </div>
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val ${roiCls}">¥${returned.toLocaleString()}</div>
+          <div class="yesterday-stat__label">回収</div>
+        </div>
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val ${roiCls}">${(roi * 100).toFixed(0)}<span class="yesterday-stat__denom">%</span></div>
+          <div class="yesterday-stat__label">ROI</div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("yesterday-card-click").addEventListener("click", () => {
+    state.date = yDate;
+    state.filters.bets.stadium = null;
+    state.filters.races.stadium = null;
+    state.filters.races.grade = null;
+    updateDateLabel();
+    loadPage(state.page);
+  });
 }
 
 // EV説明パネルのHTML
