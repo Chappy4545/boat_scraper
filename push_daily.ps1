@@ -1,26 +1,21 @@
-# 毎日の予測後にdocs/data/*.jsonをGitHubへ自動Push
-# Task Schedulerから 08:45 頃に呼ばれる
-# 使い方: powershell -ExecutionPolicy Bypass -File push_daily.ps1
-
-$workDir = "c:\Users\kcs15\OneDrive\デスクトップ\boat_scraper"
+$workDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $workDir
 
 $today = (Get-Date).ToString("yyyy-MM-dd")
 
-# 変更があるか確認
 $status = git status --porcelain docs/data/ 2>&1
 if (-not $status) {
-    Write-Host "[$today] docs/data/ に変更なし — Push スキップ"
+    Write-Host "[$today] no changes - skipping push"
     exit 0
 }
 
 git add docs/data/
-git commit -m "data: $today の予測・買い目を更新"
+git commit -m "data: update $today"
 git push origin master
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "[$today] GitHub Push 完了"
+    Write-Host "[$today] push OK"
 } else {
-    Write-Host "[$today] Push 失敗 (exit $LASTEXITCODE)"
+    Write-Host "[$today] push failed"
     exit 1
 }

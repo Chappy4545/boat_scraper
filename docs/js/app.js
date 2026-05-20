@@ -24,7 +24,8 @@ const state = {
 // ユーティリティ
 // ════════════════════════════════
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 function fmtDate(str) {
   const d = new Date(str + "T00:00:00");
@@ -34,7 +35,7 @@ function fmtDate(str) {
 function addDays(str, n) {
   const d = new Date(str + "T00:00:00");
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 async function api(path) {
   const res = await fetch(path);
@@ -180,6 +181,7 @@ async function loadBets() {
   // ローディング
   container.innerHTML = '<div class="empty">読込中…</div>';
 
+  state._betsCache = [];
   try {
     const bets = await api(`data/bets_${state.date}.json`);
     state._betsCache = bets;
@@ -194,7 +196,11 @@ async function loadBets() {
 
     renderBets();
   } catch (e) {
-    container.innerHTML = `<div class="empty">取得失敗 (${e.message})</div>`;
+    document.getElementById("bets-filter-area").innerHTML = "";
+    document.getElementById("bets-summary").innerHTML = "";
+    container.innerHTML = e.message === "404"
+      ? '<div class="empty">この日のデータがありません</div>'
+      : `<div class="empty">取得失敗 (${e.message})</div>`;
   }
 }
 
@@ -356,6 +362,8 @@ function buildBetCard(b) {
 async function loadRaces() {
   const container = document.getElementById("race-list");
   container.innerHTML = '<div class="empty">読込中…</div>';
+  state._racesCache = [];
+  state._betCountByRace = {};
   try {
     const [races, bets] = await Promise.all([
       api(`data/races_${state.date}.json`),
@@ -378,7 +386,10 @@ async function loadRaces() {
     renderRaces();
     races.forEach(r => loadRaceProbs(r.id));
   } catch (e) {
-    container.innerHTML = `<div class="empty">取得失敗 (${e.message})</div>`;
+    document.getElementById("races-filter-area").innerHTML = "";
+    container.innerHTML = e.message === "404"
+      ? '<div class="empty">この日のデータがありません</div>'
+      : `<div class="empty">取得失敗 (${e.message})</div>`;
   }
 }
 
