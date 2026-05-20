@@ -168,9 +168,17 @@ def _predict_from_df(race_df: pd.DataFrame, models: dict) -> pd.DataFrame:
         })
 
     pred_df = pd.DataFrame(results)
-    total = pred_df["win_prob"].sum()
-    if total > 0:
-        pred_df["win_prob"] /= total
+    total_win = pred_df["win_prob"].sum()
+    if total_win > 0:
+        pred_df["win_prob"] /= total_win
+    total_top2 = pred_df["top2_prob"].sum()
+    if total_top2 > 0:
+        pred_df["top2_prob"] = pred_df["top2_prob"] / total_top2 * 2.0
+    total_top3 = pred_df["top3_prob"].sum()
+    if total_top3 > 0:
+        pred_df["top3_prob"] = pred_df["top3_prob"] / total_top3 * 3.0
+    pred_df["top2_prob"] = np.maximum(pred_df["top2_prob"], pred_df["win_prob"])
+    pred_df["top3_prob"] = np.maximum(pred_df["top3_prob"], pred_df["top2_prob"])
     pred_df["confidence"] = pred_df["win_prob"].max()
     return pred_df
 

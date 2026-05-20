@@ -148,8 +148,8 @@ def _calc_bet_probs(pred: pd.DataFrame, bet_type: str) -> list[dict]:
 
 def _prob_top2_fuku(boats: dict, a: int, b: int) -> float:
     """艇 a と b が1-2着を占める確率の近似。"""
-    p_a1_b2 = boats[a]["win_prob"] * max(boats[b]["top2_prob"] - boats[b]["win_prob"], 0) / max(1 - boats[a]["win_prob"], 1e-9)
-    p_b1_a2 = boats[b]["win_prob"] * max(boats[a]["top2_prob"] - boats[a]["win_prob"], 0) / max(1 - boats[b]["win_prob"], 1e-9)
+    p_a1_b2 = boats[a]["win_prob"] * min(1.0, max(boats[b]["top2_prob"] - boats[b]["win_prob"], 0) / max(1 - boats[a]["win_prob"], 1e-9))
+    p_b1_a2 = boats[b]["win_prob"] * min(1.0, max(boats[a]["top2_prob"] - boats[a]["win_prob"], 0) / max(1 - boats[b]["win_prob"], 1e-9))
     return max(0, p_a1_b2 + p_b1_a2)
 
 
@@ -157,9 +157,10 @@ def _prob_sanrentan(boats: dict, a: int, b: int, c: int) -> float:
     """艇 a 1着 → b 2着 → c 3着の確率近似。"""
     p_a = boats[a]["win_prob"]
     rem_b = max(1 - p_a, 1e-9)
-    p_b_given_a = max(boats[b]["top2_prob"] - boats[b]["win_prob"], 0) / rem_b
-    rem_c = max(1 - p_a - boats[b]["win_prob"], 1e-9)
-    p_c_given_ab = max(boats[c]["top3_prob"] - boats[c]["top2_prob"], 0) / rem_c
+    # 条件付き確率は [0, 1] にクリップ（top2/top3 が独立モデルで過大になるケースの防御）
+    p_b_given_a = min(1.0, max(boats[b]["top2_prob"] - boats[b]["win_prob"], 0) / rem_b)
+    rem_c = max(1 - boats[a]["win_prob"] - boats[b]["win_prob"], 1e-9)
+    p_c_given_ab = min(1.0, max(boats[c]["top3_prob"] - boats[c]["top2_prob"], 0) / rem_c)
     return max(0, p_a * p_b_given_a * p_c_given_ab)
 
 

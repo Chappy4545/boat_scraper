@@ -188,6 +188,21 @@ def _merge_all(df: pd.DataFrame) -> pd.DataFrame:
     # 風速区間（強風はスタート乱れやすい）
     df["wind_strong"] = (df["wind_speed"].fillna(0) >= 5).astype(int)
 
+    # 天気を数値化（晴=0, 曇=1, 雨=2, その他=3）
+    weather_map = {"晴": 0, "晴一時曇": 0, "曇": 1, "曇一時雨": 1, "雨": 2, "雪": 2}
+    df["weather_num"] = df["weather"].map(weather_map).fillna(3).astype(int) \
+        if "weather" in df.columns else 3
+
+    # 風向を数値化（1〜16: 北基準時計回り22.5°刻み、0=不明）
+    df["wind_direction_num"] = pd.to_numeric(
+        df["wind_direction"], errors="coerce"
+    ).fillna(0).astype(int) if "wind_direction" in df.columns else 0
+
+    # 開催場コードを数値化（"01"〜"24" → 1〜24）
+    df["stadium_code_num"] = pd.to_numeric(
+        df["stadium_code"], errors="coerce"
+    ).fillna(0).astype(int) if "stadium_code" in df.columns else 0
+
     # 展示タイム偏差（同レース内の相対値）
     df["exh_time_rank"] = df.groupby("race_id")["exhibition_time"].rank(ascending=False)
     df["exh_time_z"] = df.groupby("race_id")["exhibition_time"].transform(
@@ -325,6 +340,8 @@ def _add_targets(df: pd.DataFrame, engine) -> pd.DataFrame:
 FEATURE_COLS = [
     # レース基本
     "race_no", "grade_num", "is_night", "distance", "month",
+    # 開催場（場によってコース別有利度が大きく異なる）
+    "stadium_code_num",
     # 艇
     "boat_no", "entry_course",
     # 選手
@@ -340,8 +357,9 @@ FEATURE_COLS = [
     "exhibition_time", "exhibition_st",
     "exh_time_rank", "exh_time_z", "exh_st_rank",
     "tilt", "propeller_changed", "weight_diff",
-    # 気象
+    # 気象（wind_direction_num は方角1〜16、weather_num は晴0/曇1/雨2）
     "temperature", "water_temperature", "wind_speed", "wave_height", "wind_strong",
+    "wind_direction_num", "weather_num",
     "is_saltwater",
 ]
 
@@ -357,7 +375,8 @@ def _finalize(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # bool → int
-    for col in ["propeller_changed", "is_night", "wind_strong", "is_saltwater"]:
+    for col in ["propeller_changed", "is_night", "wind_strong", "is_saltwater",
+                "weather_num", "wind_direction_num", "stadium_code_num"]:
         if col in df.columns:
             df[col] = df[col].fillna(0).astype(int)
 

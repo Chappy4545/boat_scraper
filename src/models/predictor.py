@@ -62,11 +62,21 @@ def predict_race(race_id: int, model_version: str = "v1") -> pd.DataFrame:
         })
 
     pred_df = pd.DataFrame(results)
-    # 確率の合計を正規化（win の合計は 1 になるべき）
+    # win を正規化（合計=1）
     total_win = pred_df["win_prob"].sum()
     if total_win > 0:
         pred_df["win_prob"] = pred_df["win_prob"] / total_win
-    # 信頼度: win確率の最大値（高いほどモデルが断言している）
+    # top2/top3 を理論合計（2.0 / 3.0）に正規化
+    total_top2 = pred_df["top2_prob"].sum()
+    if total_top2 > 0:
+        pred_df["top2_prob"] = pred_df["top2_prob"] / total_top2 * 2.0
+    total_top3 = pred_df["top3_prob"].sum()
+    if total_top3 > 0:
+        pred_df["top3_prob"] = pred_df["top3_prob"] / total_top3 * 3.0
+    # 単調性を強制: win <= top2 <= top3（モデルが独立学習するため逆転することがある）
+    pred_df["top2_prob"] = np.maximum(pred_df["top2_prob"], pred_df["win_prob"])
+    pred_df["top3_prob"] = np.maximum(pred_df["top3_prob"], pred_df["top2_prob"])
+    # 信頼度: win確率の最大値
     pred_df["confidence"] = pred_df["win_prob"].max()
 
     return pred_df
