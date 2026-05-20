@@ -182,9 +182,14 @@ async function loadBets() {
   container.innerHTML = '<div class="empty">読込中…</div>';
 
   state._betsCache = [];
+  state._racesCache = [];
   try {
-    const bets = await api(`data/bets_${state.date}.json`);
+    const [bets, races] = await Promise.all([
+      api(`data/bets_${state.date}.json`),
+      api(`data/races_${state.date}.json`).catch(() => []),
+    ]);
     state._betsCache = bets;
+    state._racesCache = races;
 
     if (!bets.length) {
       // フィルターバーなし
