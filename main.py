@@ -3,6 +3,7 @@
 使い方:
   python main.py server                             # PWA + API サーバー起動
   python main.py initdb                             # DBテーブル作成
+  python main.py update [DATE]                       # collect + predict を一括実行（定期更新用）
   python main.py collect [DATE]                     # データ収集 (DATE: YYYY-MM-DD, 省略=今日)
   python main.py collect_range DATE_FROM DATE_TO    # 期間一括収集（オッズスキップ・再開可能）
   python main.py backfill_grades                    # 既存レースのグレード情報をバックフィル
@@ -393,6 +394,17 @@ def cmd_backfill_grades(max_workers: int = 5):
     logger.info(f"バックフィル完了: {updated}/{total} レース更新")
 
 
+def cmd_update(target_date: date | None = None, max_workers: int = 5):
+    """collect → predict を1コマンドで実行する。
+    タスクスケジューラから 8:00 / 12:00 / 15:00 に呼び出すことを想定。
+    """
+    d = target_date or date.today()
+    logger.info(f"=== UPDATE 開始: {d} ===")
+    cmd_collect(d, max_workers=max_workers)
+    cmd_predict(d)
+    logger.info(f"=== UPDATE 完了: {d} ===")
+
+
 def cmd_backtest(date_from: str, date_to: str):
     from src.backtest.runner import run_backtest
     from src.ingestion.database import init_db
@@ -416,6 +428,10 @@ def main():
         cmd_server()
     elif cmd == "initdb":
         cmd_initdb()
+    elif cmd == "update":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        workers = int(args[2]) if len(args) > 2 else 5
+        cmd_update(d, max_workers=workers)
     elif cmd == "collect":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         workers = int(args[2]) if len(args) > 2 else 5
