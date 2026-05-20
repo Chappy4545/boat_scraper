@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v3";
+const CACHE_NAME = "boatrace-v4";
 const STATIC_ASSETS = ["css/style.css", "js/app.js", "manifest.json"];
 
 self.addEventListener("install", (e) => {

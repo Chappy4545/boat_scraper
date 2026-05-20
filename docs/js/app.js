@@ -715,6 +715,133 @@ function loadPage(page) {
   if (page === "races")    loadRaces();
   if (page === "perf")     loadPerf();
   if (page === "settings") loadSettings();
+  if (page === "info")     renderInfoPage();
+}
+
+function renderInfoPage() {
+  document.getElementById("info-content").innerHTML = `
+
+    <div class="info-section">
+      <h3 class="info-heading">予測モデルの概要</h3>
+      <p class="info-text">ロジスティック回帰（キャリブレーション済み）を使用。1着・2着以内・3着以内の3モデルを独立して学習し、各艇の着順確率を算出します。学習データは直近5〜6ヶ月分のレース結果で、時系列分割（60/40）によりデータリーク防止の検証を実施しています。</p>
+      <div class="info-accuracy">
+        <div class="info-acc-item">
+          <div class="info-acc-val">55.5%</div>
+          <div class="info-acc-label">1着的中率</div>
+          <div class="info-acc-base">ランダム 16.7%</div>
+        </div>
+        <div class="info-acc-item">
+          <div class="info-acc-val">32.3%</div>
+          <div class="info-acc-label">2連複的中率</div>
+          <div class="info-acc-base">ランダム 6.7%</div>
+        </div>
+        <div class="info-acc-item">
+          <div class="info-acc-val">24.8%</div>
+          <div class="info-acc-label">3連複的中率</div>
+          <div class="info-acc-base">ランダム 5.0%</div>
+        </div>
+        <div class="info-acc-item">
+          <div class="info-acc-val">9.7%</div>
+          <div class="info-acc-label">3連単的中率</div>
+          <div class="info-acc-base">ランダム 0.83%</div>
+        </div>
+      </div>
+      <p class="info-note">※ テスト期間 8,470 レースで評価（2026/3〜5月）</p>
+    </div>
+
+    <div class="info-section">
+      <h3 class="info-heading">使用している特徴量（45項目）</h3>
+      <div class="info-features">
+        <div class="info-feat-group">
+          <div class="info-feat-title">レース情報</div>
+          <div class="info-feat-tags">
+            ${["レースNo","グレード","ナイター","距離","月","開催場"].map(t=>`<span class="info-tag impl">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">選手</div>
+          <div class="info-feat-tags">
+            ${["級別","年齢","体重","F回数","L回数","ST平均","全国勝率","全国2連率","全国3連率","当地勝率","当地2連率","当地3連率","勝率Zスコア"].map(t=>`<span class="info-tag impl">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">モーター・ボート</div>
+          <div class="info-feat-tags">
+            ${["モーター2連率","モーター3連率","ボート2連率","ボート3連率","各Zスコア"].map(t=>`<span class="info-tag impl">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">直前情報</div>
+          <div class="info-feat-tags">
+            ${["展示タイム","展示タイム順位","展示ST","展示ST順位","チルト","プロペラ交換","体重差"].map(t=>`<span class="info-tag impl">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">気象・会場</div>
+          <div class="info-feat-tags">
+            ${["気温","水温","風速","波高","強風フラグ","風向","天候","淡水/海水"].map(t=>`<span class="info-tag impl">${t}</span>`).join("")}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="info-section">
+      <h3 class="info-heading">精度向上に必要な未実装要素</h3>
+      <div class="info-features">
+        <div class="info-feat-group">
+          <div class="info-feat-title">選手データの拡充</div>
+          <div class="info-feat-tags">
+            ${[
+              ["会場別勝率","この選手がこの場所で過去どれだけ勝っているか（会場適性）"],
+              ["コース別勝率","各艇番でのコース進入成功率（1号艇スタートが得意かどうか）"],
+              ["直近N走トレンド","平均値だけでなく直近3走・6走の上昇/下降トレンド"],
+              ["同一開催内前走成績","同じ開催で前のレースに出た場合の状態反映"],
+            ].map(([t,d])=>`<span class="info-tag todo" title="${d}">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">モーター・機材</div>
+          <div class="info-feat-tags">
+            ${[
+              ["モーター整備詳細","プロペラ調整内容（ピッチ角・枚数変更など）"],
+              ["モーター直近成績","今節のみの勝率（整備後の状態変化を反映）"],
+            ].map(([t,d])=>`<span class="info-tag todo" title="${t}: ${d}">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">レース構造</div>
+          <div class="info-feat-tags">
+            ${[
+              ["相手強度スコア","同レース内の対戦相手の平均実力（強豪揃いかどうか）"],
+              ["展示コース進入","展示レースで実際に何コースを取ったか（内側争いの有無）"],
+              ["進入隊形","スタート前の各艇の並び順（コース進入の積極性）"],
+            ].map(([t,d])=>`<span class="info-tag todo" title="${d}">${t}</span>`).join("")}
+          </div>
+        </div>
+        <div class="info-feat-group">
+          <div class="info-feat-title">モデル設計</div>
+          <div class="info-feat-tags">
+            ${[
+              ["ペアワイズ比較","艇同士を1対1で比較するモデル（現在は独立予測）"],
+              ["LightGBM with SHAP","データが増えれば特徴量の非線形関係を学習できる"],
+              ["オッズ逆算確率","市場オッズから暗黙の確率を計算し、モデルと比較する"],
+            ].map(([t,d])=>`<span class="info-tag todo" title="${d}">${t}</span>`).join("")}
+          </div>
+        </div>
+      </div>
+      <p class="info-note">※ タグにカーソルを合わせると詳細説明が表示されます</p>
+    </div>
+
+    <div class="info-section">
+      <h3 class="info-heading">更新スケジュール</h3>
+      <div class="info-schedule">
+        <div class="info-sched-row"><span class="info-sched-time">08:00</span><span class="info-sched-desc">データ収集・予測生成（R1〜R4）</span></div>
+        <div class="info-sched-row"><span class="info-sched-time">12:00</span><span class="info-sched-desc">追加収集・予測更新（R5〜R8）</span></div>
+        <div class="info-sched-row"><span class="info-sched-time">15:00</span><span class="info-sched-desc">追加収集・予測更新（R9〜R11）</span></div>
+        <div class="info-sched-row"><span class="info-sched-time">22:30</span><span class="info-sched-desc">結果収集・的中判定・実績更新</span></div>
+      </div>
+    </div>
+  `;
 }
 
 // ════════════════════════════════

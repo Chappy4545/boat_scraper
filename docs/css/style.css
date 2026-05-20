@@ -824,3 +824,112 @@ body {
   font-weight: 700;
   white-space: nowrap;
 }
+
+/* ── 情報ページ ── */
+.info-section {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 1.1rem 1.1rem .9rem;
+  margin-bottom: .9rem;
+}
+.info-heading {
+  font-size: .9rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0 0 .7rem;
+  padding-bottom: .4rem;
+  border-bottom: 1px solid var(--border);
+}
+.info-text {
+  font-size: .82rem;
+  color: var(--text);
+  line-height: 1.65;
+  margin: 0 0 .8rem;
+}
+.info-note {
+  font-size: .72rem;
+  color: var(--muted);
+  margin: .5rem 0 0;
+}
+/* 精度グリッド */
+.info-accuracy {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .5rem;
+  margin-bottom: .5rem;
+}
+.info-acc-item {
+  background: var(--bg2);
+  border-radius: 8px;
+  padding: .5rem .4rem;
+  text-align: center;
+}
+.info-acc-val {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--good);
+}
+.info-acc-label {
+  font-size: .65rem;
+  color: var(--text);
+  margin: .15rem 0 .1rem;
+}
+.info-acc-base {
+  font-size: .6rem;
+  color: var(--muted);
+}
+/* 特徴量グループ */
+.info-features {
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+}
+.info-feat-group {}
+.info-feat-title {
+  font-size: .72rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: .3rem;
+}
+.info-feat-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem;
+}
+.info-tag {
+  font-size: .72rem;
+  padding: .2rem .55rem;
+  border-radius: 20px;
+  cursor: default;
+}
+.info-tag.impl {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.info-tag.todo {
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  color: var(--muted);
+  border: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent);
+}
+/* スケジュール */
+.info-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.info-sched-row {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  font-size: .82rem;
+}
+.info-sched-time {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  min-width: 3rem;
+}
+.info-sched-desc {
+  color: var(--text);
+}
