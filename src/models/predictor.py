@@ -109,6 +109,6 @@ def _prepare_X(df: pd.DataFrame) -> np.ndarray:
         if col not in X.columns:
             X[col] = np.nan
         X[col] = pd.to_numeric(X[col], errors="coerce")
-    medians = X.median()
+    medians = X.median().fillna(0)  # 全NaN列は0で補完（新特徴量がDBに未収録のレース対策）
     X = X.fillna(medians)
     return X.values

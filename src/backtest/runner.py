@@ -149,7 +149,7 @@ def _predict_from_df(race_df: pd.DataFrame, models: dict) -> pd.DataFrame:
         if col not in X.columns:
             X[col] = np.nan
         X[col] = pd.to_numeric(X[col], errors="coerce")
-    medians = X.median()
+    medians = X.median().fillna(0)
     X = X.fillna(medians).values
 
     results = []
