@@ -37,14 +37,13 @@ stadiums:
   "24": "大村"
 
 betting:
-  min_expected_value: 1.10
+  min_expected_value: 5.0
   max_bets_per_race: 5
-  min_model_confidence: 0.40
+  min_model_confidence: 0.20
   min_odds: 1.5
   max_odds: 20.0
   bet_types:
     - "2連複"
-    - "2連単"
     - "3連複"
     - "3連単"
 
