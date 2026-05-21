@@ -29,6 +29,7 @@ _URLS = {
     "odds2tf":    "/owpc/pc/race/odds2tf",
     "raceresult": "/owpc/pc/race/raceresult",
     "index":      "/owpc/pc/race/index",
+    "pay":        "/owpc/pc/race/pay",
 }
 
 # 全角数字 → 半角
@@ -771,6 +772,66 @@ class BoatRaceScraper(BaseScraper):
             self._parse_race_result(html, stadium_code, race_date, race_no),
             self._parse_payouts(html, stadium_code, race_date, race_no),
         )
+
+    def parse_pay_summary(self, html: str) -> list[tuple[str, int]]:
+        """払戻一覧ページから終了済みレースの (venue_code, race_no) リストを返す。"""
+        soup = BeautifulSoup(html, "lxml")
+        seen: set[tuple[str, int]] = set()
+        results: list[tuple[str, int]] = []
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if "raceresult" not in href:
+                continue
+            m_jcd = re.search(r"jcd=(\d+)", href)
+            m_rno = re.search(r"rno=(\d+)", href)
+            if m_jcd and m_rno:
+                key = (m_jcd.group(1), int(m_rno.group(1)))
+                if key not in seen:
+                    seen.add(key)
+                    results.append(key)
+        return sorted(results)
+
+    def collect_day_results(self, race_date: date, max_workers: int = 5) -> dict:
+        """払戻一覧ページから終了済みレースを特定し、結果・払戻のみ収集する。"""
+        pay_params = {"hd": race_date.strftime("%Y%m%d")}
+        html = self._fetch_raw(self._url("pay"), pay_params)
+        finished = self.parse_pay_summary(html)
+        logger.info(f"終了済みレース: {len(finished)}件")
+
+        merged: dict[str, list] = {"race_result": [], "payouts": []}
+
+        if max_workers <= 1:
+            for venue_code, race_no in finished:
+                try:
+                    rr, py = self.get_race_result_and_payouts(venue_code, race_date, race_no)
+                    merged["race_result"].append(rr)
+                    merged["payouts"].append(py)
+                except Exception as e:
+                    logger.warning(f"結果取得失敗 {venue_code} R{race_no}: {e}")
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            config = self._config
+
+            def _worker(venue_code: str, race_no: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+                with BoatRaceScraper(config) as s:
+                    return s.get_race_result_and_payouts(venue_code, race_date, race_no)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_worker, vc, rn): (vc, rn) for vc, rn in finished}
+                for future in as_completed(futures):
+                    vc, rn = futures[future]
+                    try:
+                        rr, py = future.result()
+                        merged["race_result"].append(rr)
+                        merged["payouts"].append(py)
+                    except Exception as e:
+                        logger.warning(f"結果取得失敗 {vc} R{rn}: {e}")
+
+        return {
+            k: pd.concat(v, ignore_index=True)
+            for k, v in merged.items()
+            if v and any(not df.empty for df in v)
+        }
 
     def _parse_race_result(self, html: str, stadium_code: str,
                            race_date: date, race_no: int) -> pd.DataFrame:

@@ -289,6 +289,26 @@ def cmd_predict(target_date: date | None = None):
     export_performance()
 
 
+def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
+    """払戻一覧ページから終了済みレースの結果・払戻のみ収集する（22:30 judge 専用）。
+    collect コマンドと違い racelist/odds は取得しない。
+    """
+    from src.scraping.official import BoatRaceScraper
+    from src.ingestion.database import init_db
+    from src.ingestion.saver import save_day
+    config = load_config()
+    init_db(config)
+    d = target_date or date.today()
+    logger.info(f"結果収集開始: {d}")
+    with BoatRaceScraper(config) as scraper:
+        data = scraper.collect_day_results(d, max_workers=max_workers)
+    for key, df in data.items():
+        logger.info(f"  {key}: {len(df)} 件取得")
+    summary = save_day(data)
+    logger.info(f"結果収集完了: {summary}")
+    _purge_raw_cache(config)
+
+
 def cmd_judge(target_date: date | None = None):
     """当日の買い目に的中/外れを記録する。22:00 collect の後に実行する。"""
     from src.ingestion.database import init_db, get_session
@@ -463,6 +483,9 @@ def main():
     elif cmd == "predict":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_predict(d)
+    elif cmd == "collect_results":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_collect_results(d)
     elif cmd == "judge":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge(d)
