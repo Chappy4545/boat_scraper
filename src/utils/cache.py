@@ -36,6 +36,7 @@ class FileCache:
 
     def set(self, url: str, html: str, params: Optional[dict] = None) -> None:
         key = self._key(url, params)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._path(key).write_text(html, encoding="utf-8")
         self._meta_path(key).write_text(
             json.dumps({"url": url, "params": params, "cached_at": datetime.now().isoformat()}),
