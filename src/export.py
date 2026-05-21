@@ -134,7 +134,10 @@ def export_performance() -> None:
         settled = [b for b in all_bets if b.is_hit is not None]
         hits = sum(1 for b in settled if b.is_hit)
         invested = sum(b.recommended_amount or 0 for b in settled)
-        returned = sum((b.actual_payout or 0) for b in settled if b.is_hit)
+        returned = sum(
+            int((b.recommended_amount or 0) * (b.actual_payout or 0) / 100)
+            for b in settled if b.is_hit
+        )
 
         bt = (
             session.query(BacktestResult)
@@ -163,7 +166,7 @@ def export_performance() -> None:
                    COUNT(*) AS total_bets,
                    SUM(CASE WHEN b.is_hit = 1 THEN 1 ELSE 0 END) AS hits,
                    SUM(b.recommended_amount) AS invested,
-                   SUM(CASE WHEN b.is_hit = 1 THEN b.actual_payout ELSE 0 END) AS returned
+                   SUM(CASE WHEN b.is_hit = 1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
             FROM bets b
             JOIN races r ON b.race_id = r.id
             WHERE b.is_pass = 0 AND b.is_hit IS NOT NULL
