@@ -873,10 +873,12 @@ class BoatRaceScraper(BaseScraper):
     # 1日分まとめて取得
     # ------------------------------------------------------------------
     def _collect_one_stadium(self, race_date: date, code: str,
-                             skip_odds: bool = False) -> dict[str, list]:
+                             skip_odds: bool = False,
+                             skip_before_info: bool = True) -> dict[str, list]:
         """1場分の全レース（R1〜R12）を収集してバケツ辞書を返す。
 
         skip_odds=True のとき 3連単/3連複/2連単/複 をスキップする（歴史データ収集用）。
+        skip_before_info=True のとき直前情報・気象をスキップする（朝一括収集用）。
         """
         buckets: dict[str, list] = {
             "racelist": [], "before_info": [], "weather": [],
@@ -890,12 +892,13 @@ class BoatRaceScraper(BaseScraper):
                 buckets["racelist"].append(self.get_racelist(*params))
             except Exception as e:
                 logger.warning(f"出走表取得失敗 {code} R{rno}: {e}")
-            try:
-                bi, wt = self.get_before_info_and_weather(*params)
-                buckets["before_info"].append(bi)
-                buckets["weather"].append(wt)
-            except Exception as e:
-                logger.warning(f"直前/気象取得失敗 {code} R{rno}: {e}")
+            if not skip_before_info:
+                try:
+                    bi, wt = self.get_before_info_and_weather(*params)
+                    buckets["before_info"].append(bi)
+                    buckets["weather"].append(wt)
+                except Exception as e:
+                    logger.warning(f"直前/気象取得失敗 {code} R{rno}: {e}")
             if not skip_odds:
                 try:
                     buckets["odds_sanrentan"].append(self.get_odds_sanrentan(*params))
@@ -922,11 +925,13 @@ class BoatRaceScraper(BaseScraper):
     def collect_day(self, race_date: date,
                     stadium_codes: Optional[list[str]] = None,
                     max_workers: int = 1,
-                    skip_odds: bool = False) -> dict:
+                    skip_odds: bool = False,
+                    skip_before_info: bool = True) -> dict:
         """1日分の全場・全レースデータを取得して DataFrame 辞書で返す。
 
         max_workers > 1 のとき各場を並列フェッチする（場ごとに独立セッション）。
         skip_odds=True のときオッズ4種をスキップ（歴史データ収集で使用）。
+        skip_before_info=True のとき直前情報・気象をスキップ（デフォルト）。
         """
         if stadium_codes is None:
             try:
@@ -944,7 +949,7 @@ class BoatRaceScraper(BaseScraper):
 
         if max_workers <= 1:
             for code in stadium_codes:
-                for k, v in self._collect_one_stadium(race_date, code, skip_odds).items():
+                for k, v in self._collect_one_stadium(race_date, code, skip_odds, skip_before_info).items():
                     merged[k].extend(v)
         else:
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -952,7 +957,7 @@ class BoatRaceScraper(BaseScraper):
 
             def _worker(code: str) -> dict[str, list]:
                 with BoatRaceScraper(config) as s:
-                    return s._collect_one_stadium(race_date, code, skip_odds)
+                    return s._collect_one_stadium(race_date, code, skip_odds, skip_before_info)
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_worker, code): code for code in stadium_codes}

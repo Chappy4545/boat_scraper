@@ -3,7 +3,7 @@
 使い方:
   python main.py server                             # PWA + API サーバー起動
   python main.py initdb                             # DBテーブル作成
-  python main.py update [DATE]                       # collect + predict を一括実行（定期更新用）
+  python main.py update [DATE]                       # 朝一括更新: 出走表+オッズ収集 → 全レース予測
   python main.py collect [DATE]                     # データ収集 (DATE: YYYY-MM-DD, 省略=今日)
   python main.py collect_range DATE_FROM DATE_TO    # 期間一括収集（オッズスキップ・再開可能）
   python main.py backfill_grades                    # 既存レースのグレード情報をバックフィル
@@ -12,6 +12,10 @@
   python main.py judge [DATE]                       # 的中判定 → 自動でexport更新
   python main.py export [DATE]                      # 静的JSONをdocs/data/に出力
   python main.py backtest DATE_FROM DATE_TO         # バックテスト
+
+スケジュール:
+  08:00  BoatRaceUpdate08  → python main.py update   (出走表+オッズ → 全レース予測)
+  22:30  BoatRaceJudge     → daily_judge.bat          (結果収集 → 判定 → push)
 """
 import sys
 from datetime import date, timedelta
@@ -47,16 +51,17 @@ def _purge_raw_cache(config: dict) -> None:
         logger.info(f"HTMLキャッシュ削除: {cache_dir}")
 
 
-def cmd_collect(target_date: date | None = None, max_workers: int = 5):
+def cmd_collect(target_date: date | None = None, max_workers: int = 5,
+                skip_before_info: bool = True):
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import init_db
     from src.ingestion.saver import save_day
     config = load_config()
     init_db(config)
     d = target_date or date.today()
-    logger.info(f"データ収集開始: {d} (並列={max_workers})")
+    logger.info(f"データ収集開始: {d} (並列={max_workers}, 直前情報={'スキップ' if skip_before_info else '収集'})")
     with BoatRaceScraper(config) as scraper:
-        data = scraper.collect_day(d, max_workers=max_workers)
+        data = scraper.collect_day(d, max_workers=max_workers, skip_before_info=skip_before_info)
     for key, df in data.items():
         logger.info(f"  {key}: {len(df)} 件取得")
     logger.info("DB保存中...")
@@ -396,12 +401,12 @@ def cmd_backfill_grades(max_workers: int = 5):
 
 
 def cmd_update(target_date: date | None = None, max_workers: int = 5):
-    """collect → predict を1コマンドで実行する。
-    タスクスケジューラから 8:00 / 12:00 / 15:00 に呼び出すことを想定。
+    """出走表+オッズを収集して全レース予測を生成する（朝8:00 専用）。
+    直前情報はスキップし、全場の全レースを一括処理する。
     """
     d = target_date or date.today()
     logger.info(f"=== UPDATE 開始: {d} ===")
-    cmd_collect(d, max_workers=max_workers)
+    cmd_collect(d, max_workers=max_workers, skip_before_info=True)
     cmd_predict(d)
     logger.info(f"=== UPDATE 完了: {d} ===")
 
