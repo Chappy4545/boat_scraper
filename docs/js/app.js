@@ -186,13 +186,24 @@ async function loadBets() {
   const isToday = state.date === todayStr();
   const yDate   = addDays(state.date, -1);
   try {
-    const [bets, races, yBets] = await Promise.all([
+    const [bets, races, yBets, meta] = await Promise.all([
       api(`data/bets_${state.date}.json`),
       api(`data/races_${state.date}.json`).catch(() => []),
       isToday ? api(`data/bets_${yDate}.json`).catch(() => []) : Promise.resolve([]),
+      isToday ? api(`data/meta.json`).catch(() => null) : Promise.resolve(null),
     ]);
     state._betsCache = bets;
     state._racesCache = races;
+
+    const refreshEl = document.getElementById("odds-refresh-time");
+    if (meta && meta.last_refreshed) {
+      const t = new Date(meta.last_refreshed);
+      const hm = t.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+      const src = meta.source === "github_actions" ? "自動更新" : "手動更新";
+      refreshEl.textContent = `オッズ最終更新: ${hm} (${src})`;
+    } else {
+      refreshEl.textContent = "";
+    }
 
     renderYesterdayResult(yDate, yBets);
 

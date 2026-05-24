@@ -284,10 +284,11 @@ def cmd_predict(target_date: date | None = None):
     logger.info(f"予測完了: 推奨買い目 {bet_count} 件")
 
     # 予測後に自動エクスポート
-    from src.export import export_day, export_performance, export_probs
+    from src.export import export_day, export_performance, export_probs, export_meta
     export_day(d)
     export_performance()
     export_probs(d)
+    export_meta(source="local")
 
 
 def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
@@ -518,6 +519,9 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     all_bets = settled_bets + new_bets
     bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(f"refresh_odds完了: settled={len(settled_bets)}, upcoming={len(new_bets)}")
+
+    from src.export import export_meta
+    export_meta(source="github_actions")
 
 
 def cmd_backfill_grades(max_workers: int = 5):

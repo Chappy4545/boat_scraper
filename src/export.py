@@ -123,6 +123,20 @@ def export_day(target_date: date) -> dict:
     return {"races": len(races_json), "bets": len(bets_json)}
 
 
+def export_meta(source: str = "local") -> None:
+    """docs/data/meta.json にオッズ最終更新時刻を書き込む。"""
+    _ensure_data_dir()
+    from datetime import datetime, timezone, timedelta
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    path = DATA_DIR / "meta.json"
+    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    existing["last_refreshed"] = now_jst
+    existing["source"] = source
+    path.write_text(json.dumps(existing, ensure_ascii=False, indent=None), encoding="utf-8")
+    logger.info(f"export: meta.json (last_refreshed={now_jst})")
+
+
 def export_probs(target_date: date) -> None:
     """当日の全組み合わせ+model_probをdocs/data/probs_YYYY-MM-DD.jsonに保存する。
     GitHub Actionsのrefresh_oddsがDBなしでEV再計算するために使う。
