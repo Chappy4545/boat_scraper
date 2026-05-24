@@ -284,9 +284,10 @@ def cmd_predict(target_date: date | None = None):
     logger.info(f"予測完了: 推奨買い目 {bet_count} 件")
 
     # 予測後に自動エクスポート
-    from src.export import export_day, export_performance
+    from src.export import export_day, export_performance, export_probs
     export_day(d)
     export_performance()
+    export_probs(d)
 
 
 def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
@@ -346,6 +347,177 @@ def cmd_judge(target_date: date | None = None):
     from src.export import export_day, export_performance
     export_day(d)
     export_performance()
+
+
+def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
+    """DBなしでオッズを再取得してbets JSONを更新する（GitHub Actions専用）。
+    docs/data/probs_YYYY-MM-DD.json と races_YYYY-MM-DD.json を読んで動く。
+    """
+    import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime
+    from pathlib import Path
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:
+        from backports.zoneinfo import ZoneInfo  # type: ignore
+
+    from src.scraping.official import BoatRaceScraper
+    import pandas as pd
+
+    config = load_config()
+    d = target_date or date.today()
+    docs_data = Path("docs/data")
+    probs_path = docs_data / f"probs_{d}.json"
+    races_path = docs_data / f"races_{d}.json"
+    bets_path = docs_data / f"bets_{d}.json"
+
+    if not probs_path.exists():
+        logger.error(f"probs JSONなし: {probs_path}  — 先に update を実行してください")
+        return
+    if not races_path.exists():
+        logger.error(f"races JSONなし: {races_path}")
+        return
+
+    probs_data = json.loads(probs_path.read_text(encoding="utf-8"))
+    races_data = json.loads(races_path.read_text(encoding="utf-8"))
+    bets_existing = json.loads(bets_path.read_text(encoding="utf-8")) if bets_path.exists() else []
+
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    cfg_bet = config["betting"]
+    min_ev = cfg_bet["min_expected_value"]
+    min_odds = cfg_bet["min_odds"]
+    max_odds = cfg_bet["max_odds"]
+    max_bets = cfg_bet["max_bets_per_race"]
+    fixed_amount = config.get("money_management", {}).get("fixed_bet_amount", 200)
+
+    # 決着済みベットはそのまま保持
+    settled_bets = [b for b in bets_existing if b.get("is_hit") is not None]
+    settled_race_ids = {b["race_id"] for b in settled_bets}
+
+    # race_id → レースメタデータ
+    race_meta = {r["id"]: r for r in races_data}
+
+    # upcoming races（締切が現在時刻より後）
+    upcoming_race_ids: list[int] = []
+    for race in races_data:
+        if race["id"] in settled_race_ids:
+            continue
+        ct = race.get("closing_time")
+        if ct:
+            try:
+                closing_dt = datetime.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(
+                    tzinfo=ZoneInfo("Asia/Tokyo")
+                )
+                if closing_dt > now_jst:
+                    upcoming_race_ids.append(race["id"])
+            except Exception:
+                upcoming_race_ids.append(race["id"])
+        else:
+            upcoming_race_ids.append(race["id"])
+
+    logger.info(f"refresh_odds: {d}  upcoming={len(upcoming_race_ids)}レース")
+
+    # probs JSONをrace_idでインデックス化
+    probs_by_race = {
+        entry["race_id"]: entry
+        for entry in probs_data.get("races", [])
+        if entry["race_id"] in upcoming_race_ids
+    }
+
+    def fetch_race_odds(race_id: int) -> tuple[int, list[dict]]:
+        entry = probs_by_race[race_id]
+        stadium_code: str = entry["stadium_code"]
+        race_no: int = entry["race_no"]
+        combinations: list[dict] = entry["combinations"]
+        needed = {c["bet_type"] for c in combinations}
+
+        odds_frames: list[pd.DataFrame] = []
+        with BoatRaceScraper(config) as sc:
+            if "sanrentan" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_sanrentan(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"sanrentan odds失敗 {stadium_code} R{race_no}: {e}")
+            if "sanrenfuku" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_sanrenfuku(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"sanrenfuku odds失敗 {stadium_code} R{race_no}: {e}")
+            if "nirenfuku" in needed or "nirentan" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_nirenfuku(stadium_code, d, race_no))
+                    odds_frames.append(sc.get_odds_nirentan(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"niren odds失敗 {stadium_code} R{race_no}: {e}")
+
+        if not odds_frames:
+            return race_id, []
+
+        odds_all = pd.concat(odds_frames, ignore_index=True)
+        odds_lookup = {
+            (row["bet_type"], row["combination"]): row["odds"]
+            for _, row in odds_all.iterrows()
+        }
+
+        candidates = []
+        for combo in combinations:
+            key = (combo["bet_type"], combo["combination"])
+            odds_val = odds_lookup.get(key)
+            if odds_val is None or pd.isna(odds_val):
+                continue
+            if not (min_odds <= odds_val <= max_odds):
+                continue
+            mp = combo["model_prob"]
+            if mp is None:
+                continue
+            ev = mp * odds_val
+            if ev >= min_ev:
+                candidates.append({
+                    "bet_type": combo["bet_type"],
+                    "combination": combo["combination"],
+                    "model_prob": round(mp, 4),
+                    "odds": odds_val,
+                    "expected_value": round(ev, 4),
+                    "_ev": ev,
+                })
+
+        candidates.sort(key=lambda x: x["_ev"], reverse=True)
+        candidates = candidates[:max_bets]
+        for c in candidates:
+            del c["_ev"]
+        return race_id, candidates
+
+    new_bets: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(fetch_race_odds, rid): rid for rid in probs_by_race}
+        for future in as_completed(futures):
+            rid = futures[future]
+            try:
+                race_id, race_bets = future.result()
+                meta = race_meta.get(race_id, {})
+                for b in race_bets:
+                    new_bets.append({
+                        "bet_id": None,
+                        "race_id": race_id,
+                        "stadium_name": meta.get("stadium", ""),
+                        "race_no": meta.get("race_no"),
+                        "grade": meta.get("grade"),
+                        "race_type": meta.get("race_type"),
+                        "closing_time": meta.get("closing_time"),
+                        "is_night": meta.get("is_night"),
+                        **b,
+                        "recommended_amount": fixed_amount,
+                        "is_hit": None,
+                        "actual_payout": None,
+                    })
+            except Exception as e:
+                logger.warning(f"race_id={rid} オッズ更新失敗: {e}")
+
+    new_bets.sort(key=lambda b: (b.get("race_no") or 0, -(b.get("expected_value") or 0)))
+    all_bets = settled_bets + new_bets
+    bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
+    logger.info(f"refresh_odds完了: settled={len(settled_bets)}, upcoming={len(new_bets)}")
 
 
 def cmd_backfill_grades(max_workers: int = 5):
@@ -486,6 +658,10 @@ def main():
     elif cmd == "collect_results":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_collect_results(d)
+    elif cmd == "refresh_odds":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        workers = int(args[2]) if len(args) > 2 else 5
+        cmd_refresh_odds(d, max_workers=workers)
     elif cmd == "judge":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge(d)

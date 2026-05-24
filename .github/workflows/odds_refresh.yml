@@ -1,0 +1,53 @@
+name: Odds Refresh
+
+on:
+  schedule:
+    # 毎時0分 (UTC 0-13, 23) = JST 9:00〜23:00
+    - cron: '0 0-13,23 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYY-MM-DD, 省略=今日)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh odds
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          if [ -n "$DATE" ]; then
+            python main.py refresh_odds "$DATE"
+          else
+            python main.py refresh_odds
+          fi
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/bets_*.json
+          if git diff --cached --quiet; then
+            echo "変更なし — スキップ"
+          else
+            git commit -m "auto: refresh odds $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi

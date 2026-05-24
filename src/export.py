@@ -123,6 +123,51 @@ def export_day(target_date: date) -> dict:
     return {"races": len(races_json), "bets": len(bets_json)}
 
 
+def export_probs(target_date: date) -> None:
+    """当日の全組み合わせ+model_probをdocs/data/probs_YYYY-MM-DD.jsonに保存する。
+    GitHub Actionsのrefresh_oddsがDBなしでEV再計算するために使う。
+    """
+    _ensure_data_dir()
+    from collections import defaultdict
+    from src.ingestion.database import get_engine
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(sa_text("""
+            SELECT b.race_id, s.code AS stadium_code, r.race_no, r.closing_time,
+                   b.bet_type, b.combination, b.model_prob
+            FROM bets b
+            JOIN races r ON b.race_id = r.id
+            JOIN stadiums s ON r.stadium_id = s.id
+            WHERE r.race_date = :d AND b.model_prob IS NOT NULL
+            ORDER BY s.code, r.race_no, b.bet_type, b.combination
+        """), {"d": str(target_date)}).fetchall()
+
+    race_map: dict = defaultdict(lambda: {
+        "race_id": None, "stadium_code": None, "race_no": None,
+        "closing_time": None, "combinations": []
+    })
+    total = 0
+    for race_id, stadium_code, race_no, closing_time, bet_type, combination, model_prob in rows:
+        entry = race_map[race_id]
+        entry["race_id"] = race_id
+        entry["stadium_code"] = stadium_code
+        entry["race_no"] = race_no
+        entry["closing_time"] = closing_time
+        entry["combinations"].append({
+            "bet_type": bet_type,
+            "combination": combination,
+            "model_prob": round(model_prob, 6),
+        })
+        total += 1
+
+    data = {"date": str(target_date), "races": list(race_map.values())}
+    path = DATA_DIR / f"probs_{target_date}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
+    logger.info(f"export: {path.name} ({len(race_map)}レース, {total}組み合わせ)")
+
+
 def export_performance() -> None:
     """全期間の収支サマリー＋日別実績を docs/data/performance.json に保存する。"""
     _ensure_data_dir()
