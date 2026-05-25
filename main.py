@@ -356,15 +356,13 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     """
     import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from datetime import datetime
+    from datetime import datetime, timezone, timedelta
     from pathlib import Path
-    try:
-        from zoneinfo import ZoneInfo
-    except ImportError:
-        from backports.zoneinfo import ZoneInfo  # type: ignore
 
     from src.scraping.official import BoatRaceScraper
     import pandas as pd
+
+    JST = timezone(timedelta(hours=9))
 
     config = load_config()
     d = target_date or date.today()
@@ -384,7 +382,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     races_data = json.loads(races_path.read_text(encoding="utf-8"))
     bets_existing = json.loads(bets_path.read_text(encoding="utf-8")) if bets_path.exists() else []
 
-    now_jst = datetime.now(ZoneInfo("Asia/Tokyo"))
+    now_jst = datetime.now(JST)
     cfg_bet = config["betting"]
     min_ev = cfg_bet["min_expected_value"]
     min_odds = cfg_bet["min_odds"]
@@ -408,7 +406,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         if ct:
             try:
                 closing_dt = datetime.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(
-                    tzinfo=ZoneInfo("Asia/Tokyo")
+                    tzinfo=JST
                 )
                 if closing_dt > now_jst:
                     upcoming_race_ids.append(race["id"])
