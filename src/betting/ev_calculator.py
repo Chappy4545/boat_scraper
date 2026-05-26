@@ -53,6 +53,7 @@ def generate_bets(
     max_odds = cfg["max_odds"]
     max_bets = cfg["max_bets_per_race"]
     bet_types = cfg.get("bet_types", ["2連複", "2連単", "3連複", "3連単"])
+    overrides = cfg.get("bet_type_overrides", {})
 
     if pred_df.empty:
         return _pass_df("予測データなし")
@@ -71,6 +72,13 @@ def generate_bets(
         return _pass_df("買い目候補なし")
 
     cands_df = pd.DataFrame(candidates)
+
+    # bet_type別オーバーライド: calibration_factor を model_prob に適用
+    for bt, ov in overrides.items():
+        factor = ov.get("calibration_factor", 1.0)
+        if factor != 1.0:
+            mask = cands_df["bet_type"] == bt
+            cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"] * factor
 
     # オッズをマージ
     cands_df = _merge_odds(cands_df, odds_df)
@@ -91,6 +99,24 @@ def generate_bets(
     cands_df.loc[mask_odds_low, ["is_pass", "pass_reason"]] = [True, f"オッズ低({min_odds}未満)"]
     cands_df.loc[mask_odds_high, ["is_pass", "pass_reason"]] = [True, f"大穴除外({max_odds}超)"]
     cands_df.loc[mask_no_odds, ["is_pass", "pass_reason"]] = [True, "オッズなし"]
+
+    # bet_type別オーバーライド（min_odds / max_odds / min_ev）
+    for bt, ov in overrides.items():
+        bt_min_odds = ov.get("min_odds")
+        bt_max_odds = ov.get("max_odds")
+        bt_min_ev = ov.get("min_ev")
+        active = (~cands_df["is_pass"]) & (cands_df["bet_type"] == bt)
+        if bt_min_odds is not None:
+            mask = active & (cands_df["odds"] < bt_min_odds)
+            cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"オッズ低({bt_min_odds}未満/{bt})"]
+            active = (~cands_df["is_pass"]) & (cands_df["bet_type"] == bt)
+        if bt_max_odds is not None:
+            mask = active & (cands_df["odds"] > bt_max_odds)
+            cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"大穴除外({bt_max_odds}超/{bt})"]
+            active = (~cands_df["is_pass"]) & (cands_df["bet_type"] == bt)
+        if bt_min_ev is not None:
+            mask = active & (cands_df["expected_value"] < bt_min_ev)
+            cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"EV < {bt_min_ev}/{bt}"]
 
     # 買い目を EV 降順でソート、上限本数まで
     buy = cands_df[~cands_df["is_pass"]].sort_values("expected_value", ascending=False)

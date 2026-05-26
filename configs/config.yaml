@@ -41,11 +41,18 @@ betting:
   max_bets_per_race: 5
   min_model_confidence: 0.20
   min_odds: 1.5
-  max_odds: 20.0
+  max_odds: 50.0
   bet_types:
     - "2連複"
     - "3連複"
     - "3連単"
+  bet_type_overrides:
+    sanrenfuku:
+      calibration_factor: 1.0   # model_probはそのまま（min_evで制御）
+      min_ev: 10.0              # 生EV>=10 (圧縮・過大評価を考慮したbreak-even水準)
+      min_odds: 25.0            # 人気圧縮を避け高オッズ組み合わせのみ対象
+    sanrentan:
+      max_odds: 25.0            # 高オッズ長打ちを抑制（旧20→少し緩和）
 
 money_management:
   initial_bankroll: 100000
