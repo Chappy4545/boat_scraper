@@ -598,11 +598,40 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
     """出走表+オッズを収集して全レース予測を生成する（朝8:00 専用）。
     直前情報はスキップし、全場の全レースを一括処理する。
     """
+    import subprocess
     d = target_date or date.today()
     logger.info(f"=== UPDATE 開始: {d} ===")
     cmd_collect(d, max_workers=max_workers, skip_before_info=True)
     cmd_predict(d)
     logger.info(f"=== UPDATE 完了: {d} ===")
+
+    # docs/data/ を自動的に git push
+    try:
+        bet_count_result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"], capture_output=True, text=True
+        )
+        subprocess.run(["git", "add", "docs/data/"], check=True)
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], capture_output=True
+        )
+        if result.returncode != 0:
+            from src.ingestion.database import get_engine
+            from sqlalchemy import text as sa_text
+            engine = get_engine()
+            with engine.connect() as conn:
+                n = conn.execute(sa_text(
+                    "SELECT COUNT(*) FROM bets b JOIN races r ON b.race_id=r.id "
+                    "WHERE r.race_date=:d AND b.is_pass=0"
+                ), {"d": str(d)}).scalar()
+            msg = f"auto: update {d} 朝データ ({n}bets)"
+            subprocess.run(["git", "commit", "-m", msg], check=True)
+            subprocess.run(["git", "pull", "--no-rebase", "-q"], check=False)
+            subprocess.run(["git", "push"], check=True)
+            logger.info(f"git push 完了: {msg}")
+        else:
+            logger.info("git push スキップ: 変更なし")
+    except Exception as e:
+        logger.warning(f"git push 失敗（手動でpushしてください）: {e}")
 
 
 def cmd_backtest(date_from: str, date_to: str):
