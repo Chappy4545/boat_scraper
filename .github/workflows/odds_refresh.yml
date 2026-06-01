@@ -49,5 +49,6 @@ jobs:
             echo "変更なし — スキップ"
           else
             git commit -m "auto: refresh odds $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git pull --rebase origin master
             git push
           fi
