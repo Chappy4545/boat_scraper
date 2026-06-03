@@ -1,6 +1,10 @@
 name: Odds Refresh
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/data/probs_*.json'   # 朝のupdate後に自動トリガー
   schedule:
     # 毎時0分 (UTC 0-13, 23) = JST 9:00〜23:00
     - cron: '0 0-13,23 * * *'
