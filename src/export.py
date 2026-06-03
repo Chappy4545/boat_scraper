@@ -130,7 +130,10 @@ def export_meta(source: str = "local") -> None:
     JST = timezone(timedelta(hours=9))
     now_jst = datetime.now(JST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
     path = DATA_DIR / "meta.json"
-    existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (json.JSONDecodeError, ValueError):
+        existing = {}
     existing["last_refreshed"] = now_jst
     existing["source"] = source
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=None), encoding="utf-8")
