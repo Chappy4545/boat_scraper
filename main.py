@@ -625,13 +625,21 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
                 ), {"d": str(d)}).scalar()
             msg = f"auto: update {d} 朝データ ({n}bets)"
             subprocess.run(["git", "commit", "-m", msg], check=True)
-            subprocess.run(["git", "pull", "--no-rebase", "-q"], check=False)
+            pull_result = subprocess.run(
+                ["git", "pull", "--rebase", "origin", "master"],
+                capture_output=True, text=True
+            )
+            if pull_result.returncode != 0:
+                subprocess.run(["git", "rebase", "--abort"], check=False)
+                logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
+                logger.error("手動で 'git pull --rebase && git push' を実行してください")
+                return
             subprocess.run(["git", "push"], check=True)
             logger.info(f"git push 完了: {msg}")
         else:
             logger.info("git push スキップ: 変更なし")
     except Exception as e:
-        logger.warning(f"git push 失敗（手動でpushしてください）: {e}")
+        logger.error(f"git push 失敗（手動でpushしてください）: {e}")
 
 
 def cmd_backtest(date_from: str, date_to: str):
