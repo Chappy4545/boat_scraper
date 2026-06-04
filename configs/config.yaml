@@ -37,7 +37,7 @@ stadiums:
   "24": "大村"
 
 betting:
-  min_expected_value: 5.0
+  min_expected_value: 1.2       # キャリブレーション後の真のEV（break-even=1.0、20%マージン）
   max_bets_per_race: 5
   min_model_confidence: 0.20
   min_odds: 1.5
@@ -47,12 +47,15 @@ betting:
     - "3連複"
     - "3連単"
   bet_type_overrides:
+    nirenfuku:
+      calibration_factor: 0.37  # avg_model_prob=25.4% / 実際9.5% → 5.6x過大評価補正
     sanrenfuku:
-      calibration_factor: 1.0   # model_probはそのまま（min_evで制御）
-      min_ev: 10.0              # 生EV>=10 (圧縮・過大評価を考慮したbreak-even水準)
-      min_odds: 25.0            # 人気圧縮を避け高オッズ組み合わせのみ対象
+      calibration_factor: 0.16  # avg_model_prob=49.9% / 実際7.8% → 16x過大評価補正
+      min_ev: 1.5               # sanrenfukuは少し高めに設定
+      min_odds: 25.0            # 高オッズ特化を維持
     sanrentan:
-      max_odds: 25.0            # 高オッズ長打ちを抑制（旧20→少し緩和）
+      calibration_factor: 0.18  # avg_model_prob=39.9% / 実際7.0% → 10x過大評価補正
+      max_odds: 25.0            # 大穴抑制を維持
 
 money_management:
   initial_bankroll: 100000
