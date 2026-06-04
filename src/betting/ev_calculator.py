@@ -144,30 +144,25 @@ def _calc_bet_probs(pred: pd.DataFrame, bet_type: str) -> list[dict]:
 
     if bet_type == "2連単":  # 1着-2着（順番あり）
         for a, b in permutations(boats.keys(), 2):
-            p = boats[a]["win_prob"] * boats[b]["top2_prob"]
-            # a が1着の場合に b が2着以内になる確率の近似
             p = boats[a]["win_prob"] * (boats[b]["top2_prob"] - boats[b]["win_prob"]) / max(1 - boats[a]["win_prob"], 1e-6)
-            p = max(0, p)
-            result.append({"bet_type": "nirentan", "combination": f"{a}-{b}", "model_prob": p})
+            result.append({"bet_type": "nirentan", "combination": f"{a}-{b}", "model_prob": max(0.0, min(p, 1.0))})
 
     elif bet_type == "2連複":  # 1-2着（順番なし）
         for a, b in combinations(boats.keys(), 2):
             p = _prob_top2_fuku(boats, a, b)
-            result.append({"bet_type": "nirenfuku", "combination": f"{min(a,b)}-{max(a,b)}", "model_prob": p})
+            result.append({"bet_type": "nirenfuku", "combination": f"{min(a,b)}-{max(a,b)}", "model_prob": max(0.0, min(p, 1.0))})
 
     elif bet_type == "3連単":  # 1-2-3着（順番あり）
         for a, b, c in permutations(boats.keys(), 3):
             p = _prob_sanrentan(boats, a, b, c)
-            result.append({"bet_type": "sanrentan", "combination": f"{a}-{b}-{c}", "model_prob": p})
+            result.append({"bet_type": "sanrentan", "combination": f"{a}-{b}-{c}", "model_prob": max(0.0, min(p, 1.0))})
 
     elif bet_type == "3連複":  # 1-2-3着（順番なし）
         for combo in combinations(boats.keys(), 3):
             a, b, c = sorted(combo)
-            p = sum(
-                _prob_sanrentan(boats, *perm)
-                for perm in permutations(combo)
-            )
-            result.append({"bet_type": "sanrenfuku", "combination": f"{a}-{b}-{c}", "model_prob": p})
+            # 6順列の合算: 各_prob_sanrentanは[0,1]クリップ済みだが合算で1超えうるため最後にクリップ
+            p = sum(_prob_sanrentan(boats, *perm) for perm in permutations(combo))
+            result.append({"bet_type": "sanrenfuku", "combination": f"{a}-{b}-{c}", "model_prob": max(0.0, min(p, 1.0))})
 
     return result
 
