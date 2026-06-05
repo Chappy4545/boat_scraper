@@ -625,10 +625,17 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
                 ), {"d": str(d)}).scalar()
             msg = f"auto: update {d} 朝データ ({n}bets)"
             subprocess.run(["git", "commit", "-m", msg], check=True)
+            # unstaged changes があると rebase が失敗するため stash で退避
+            stash_result = subprocess.run(
+                ["git", "stash"], capture_output=True, text=True
+            )
+            stashed = "No local changes" not in stash_result.stdout
             pull_result = subprocess.run(
                 ["git", "pull", "--rebase", "origin", "master"],
                 capture_output=True, text=True
             )
+            if stashed:
+                subprocess.run(["git", "stash", "pop"], check=False)
             if pull_result.returncode != 0:
                 subprocess.run(["git", "rebase", "--abort"], check=False)
                 logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
