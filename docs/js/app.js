@@ -293,9 +293,9 @@ const EV_EXPLAIN_HTML = `
   <div class="ev-info-row">
     <span class="ev-info-formula">EV = モデル確率 × オッズ</span>
   </div>
-  <p class="ev-info-desc">モデルが「当たりやすい」と判断した組み合わせのオッズが高いほどEVが上がります。EV&gt;1.0で期待値プラス、このシステムはEV≥1.10のみ推奨します。</p>
+  <p class="ev-info-desc">モデルが「当たりやすい」と判断した組み合わせのオッズが高いほどEVが上がります。EV&gt;1.0で期待値プラス、このシステムはEV≥1.20のみ推奨します。</p>
   <div class="ev-info-tiers">
-    <span class="ev-tier" style="color:#90caf9">1.10〜1.29　標準</span>
+    <span class="ev-tier" style="color:#90caf9">1.20〜1.29　標準</span>
     <span class="ev-tier" style="color:#ffd54f">1.30〜1.49　高EV</span>
     <span class="ev-tier" style="color:#ff7043">1.50〜　　　超高EV</span>
   </div>
@@ -386,7 +386,7 @@ function renderBets() {
   filtered.forEach((b, i) => {
     if (state.betsSort === "ev") {
       const ev = b.expected_value || 0;
-      const tier = ev >= 1.5 ? "超高EV（1.50+）" : ev >= 1.3 ? "高EV（1.30〜1.49）" : "標準（1.10〜1.29）";
+      const tier = ev >= 1.5 ? "超高EV（1.50+）" : ev >= 1.3 ? "高EV（1.30〜1.49）" : "標準（1.20〜1.29）";
       const tierColor = ev >= 1.5 ? "#ff7043" : ev >= 1.3 ? "#ffd54f" : "#90caf9";
       if (tier !== lastTier) {
         html += `<div class="ev-tier-divider" style="color:${tierColor}">${tier}</div>`;
@@ -709,12 +709,12 @@ function loadSettings() {
   container.innerHTML = `
     <div class="info-card">
       <div class="info-card__label">データ更新タイミング</div>
-      <div class="info-card__value" style="font-size:.9rem">毎朝8:00 収集 → 8:30 予測 → 自動Push</div>
+      <div class="info-card__value" style="font-size:.9rem">毎朝8:00 収集・予測生成・自動Push → 日中毎時オッズ更新</div>
       <div class="info-card__sub">データはGitHub Pages経由で配信されます</div>
     </div>
     <div class="info-card">
       <div class="info-card__label">EV閾値</div>
-      <div class="info-card__value">EV ≥ 1.10</div>
+      <div class="info-card__value">EV ≥ 1.20</div>
     </div>`;
 }
 
@@ -734,7 +734,7 @@ function renderInfoPage() {
 
     <div class="info-section">
       <h3 class="info-heading">予測モデルの概要</h3>
-      <p class="info-text">ロジスティック回帰（キャリブレーション済み）を使用。1着・2着以内・3着以内の3モデルを独立して学習し、各艇の着順確率を算出します。学習データは直近5〜6ヶ月分のレース結果で、時系列分割（60/40）によりデータリーク防止の検証を実施しています。</p>
+      <p class="info-text">ロジスティック回帰（キャリブレーション済み）を使用。1着・2着以内・3着以内の3モデルを独立して学習し、各艇の着順確率を算出します。学習データは直近6ヶ月分のレース結果で、5分割時系列交差検証によりデータリーク防止の検証を実施しています。期待値計算には実績的中率に基づくキャリブレーション補正を適用済みです。</p>
       <div class="info-accuracy">
         <div class="info-acc-item">
           <div class="info-acc-val">55.5%</div>
@@ -757,7 +757,7 @@ function renderInfoPage() {
           <div class="info-acc-base">ランダム 0.83%</div>
         </div>
       </div>
-      <p class="info-note">※ テスト期間 8,470 レースで評価（2026/3〜5月）</p>
+      <p class="info-note">※ 2026/1〜6月のレース結果で学習・評価（5分割時系列CV）</p>
     </div>
 
     <div class="info-section">
@@ -846,9 +846,8 @@ function renderInfoPage() {
     <div class="info-section">
       <h3 class="info-heading">更新スケジュール</h3>
       <div class="info-schedule">
-        <div class="info-sched-row"><span class="info-sched-time">08:00</span><span class="info-sched-desc">データ収集・予測生成（R1〜R4）</span></div>
-        <div class="info-sched-row"><span class="info-sched-time">12:00</span><span class="info-sched-desc">追加収集・予測更新（R5〜R8）</span></div>
-        <div class="info-sched-row"><span class="info-sched-time">15:00</span><span class="info-sched-desc">追加収集・予測更新（R9〜R11）</span></div>
+        <div class="info-sched-row"><span class="info-sched-time">08:00</span><span class="info-sched-desc">データ収集・全レース予測生成・自動Push</span></div>
+        <div class="info-sched-row"><span class="info-sched-time">日中毎時</span><span class="info-sched-desc">オッズ自動更新（GitHub Actions）</span></div>
         <div class="info-sched-row"><span class="info-sched-time">22:30</span><span class="info-sched-desc">結果収集・的中判定・実績更新</span></div>
       </div>
     </div>
