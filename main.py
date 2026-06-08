@@ -607,9 +607,17 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
 
     # docs/data/ を自動的に git push
     try:
-        bet_count_result = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"], capture_output=True, text=True
+        # コミット前に pull --rebase でリモートと同期する
+        # (unstaged の生成ファイルはワーキングツリーに残るので競合しない)
+        pull_result = subprocess.run(
+            ["git", "pull", "--rebase", "origin", "master"],
+            capture_output=True, text=True
         )
+        if pull_result.returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], check=False)
+            logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
+            logger.error("手動で 'git pull --rebase && git push' を実行してください")
+            return
         subprocess.run(["git", "add", "docs/data/"], check=True)
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"], capture_output=True
@@ -625,22 +633,6 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
                 ), {"d": str(d)}).scalar()
             msg = f"auto: update {d} 朝データ ({n}bets)"
             subprocess.run(["git", "commit", "-m", msg], check=True)
-            # unstaged changes があると rebase が失敗するため stash で退避
-            stash_result = subprocess.run(
-                ["git", "stash"], capture_output=True, text=True
-            )
-            stashed = "No local changes" not in stash_result.stdout
-            pull_result = subprocess.run(
-                ["git", "pull", "--rebase", "origin", "master"],
-                capture_output=True, text=True
-            )
-            if stashed:
-                subprocess.run(["git", "stash", "pop"], check=False)
-            if pull_result.returncode != 0:
-                subprocess.run(["git", "rebase", "--abort"], check=False)
-                logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
-                logger.error("手動で 'git pull --rebase && git push' を実行してください")
-                return
             subprocess.run(["git", "push"], check=True)
             logger.info(f"git push 完了: {msg}")
         else:
