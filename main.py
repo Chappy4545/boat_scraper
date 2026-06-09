@@ -607,17 +607,6 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
 
     # docs/data/ を自動的に git push
     try:
-        # コミット前に pull --rebase でリモートと同期する
-        # (unstaged の生成ファイルはワーキングツリーに残るので競合しない)
-        pull_result = subprocess.run(
-            ["git", "pull", "--rebase", "origin", "master"],
-            capture_output=True, text=True
-        )
-        if pull_result.returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], check=False)
-            logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
-            logger.error("手動で 'git pull --rebase && git push' を実行してください")
-            return
         subprocess.run(["git", "add", "docs/data/"], check=True)
         result = subprocess.run(
             ["git", "diff", "--cached", "--quiet"], capture_output=True
@@ -633,6 +622,16 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
                 ), {"d": str(d)}).scalar()
             msg = f"auto: update {d} 朝データ ({n}bets)"
             subprocess.run(["git", "commit", "-m", msg], check=True)
+            # -X theirs: rebase時に meta.json 等が競合した場合ローカル側を優先
+            pull_result = subprocess.run(
+                ["git", "pull", "--rebase", "-X", "theirs", "origin", "master"],
+                capture_output=True, text=True
+            )
+            if pull_result.returncode != 0:
+                subprocess.run(["git", "rebase", "--abort"], check=False)
+                logger.error(f"git pull --rebase 失敗: {pull_result.stderr.strip()}")
+                logger.error("手動で 'git pull --rebase && git push' を実行してください")
+                return
             subprocess.run(["git", "push"], check=True)
             logger.info(f"git push 完了: {msg}")
         else:
