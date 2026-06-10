@@ -86,11 +86,14 @@ def train_all(df: pd.DataFrame, config: dict | None = None) -> dict:
 
 
 def load_model(target: str) -> object | None:
-    """最新の保存済みモデルを読み込む。"""
+    """最新の保存済みモデルを読み込む（mtime 最新のものを選ぶ）。"""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    candidates = sorted(MODEL_DIR.glob(f"{target}_*.joblib"))
+    candidates = list(MODEL_DIR.glob(f"{target}_*.joblib"))
     if not candidates:
         return None
+    # 異なる model 名 (logreg/lightgbm/...) のファイルが残っているとき、
+    # alphabetical sort では古いモデルが選ばれることがあるため mtime 順を採用
+    candidates.sort(key=lambda p: p.stat().st_mtime)
     return joblib.load(candidates[-1])
 
 

@@ -336,7 +336,9 @@ def _add_targets(df: pd.DataFrame, engine) -> pd.DataFrame:
 # 学習に使う特徴量列
 # 注: tidal_diff / stadium_course_*_rate はDBに値なしのため除外
 # 注: tansho_odds / popularity は歴史データ収集時にオッズスキップのため除外
-# 注: exhibition_rank はbefore_infoに存在しないため除外（exh_time_rank を使用）
+# 注: 2026-06-10 — before_info (展示) / weather は 5/21 以降未収集のため学習対象から除外
+#     これらは推論時にNaN→中央値で埋まるだけで実質的に信号を持たず、
+#     学習データとのミスマッチが推論精度を劣化させていた
 FEATURE_COLS = [
     # レース基本
     "race_no", "grade_num", "is_night", "distance", "month",
@@ -353,13 +355,7 @@ FEATURE_COLS = [
     # モーター・ボート
     "motor_top2_rate", "motor_top3_rate", "motor_top2_z",
     "boat_top2_rate", "boat_top3_rate", "boat_top2_z",
-    # 直前情報
-    "exhibition_time", "exhibition_st",
-    "exh_time_rank", "exh_time_z", "exh_st_rank",
-    "tilt", "propeller_changed", "weight_diff",
-    # 気象（wind_direction_num は方角1〜16、weather_num は晴0/曇1/雨2）
-    "temperature", "water_temperature", "wind_speed", "wave_height", "wind_strong",
-    "wind_direction_num", "weather_num",
+    # 場属性（stadiums テーブル由来）
     "is_saltwater",
 ]
 
