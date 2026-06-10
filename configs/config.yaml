@@ -53,6 +53,7 @@ betting:
       calibration_factor: 0.16  # avg_model_prob=49.9% / 実際7.8% → 16x過大評価補正
       min_ev: 1.5               # sanrenfukuは少し高めに設定
       min_odds: 25.0            # 高オッズ特化を維持
+      max_model_prob: 0.05      # 2026-06-10: pred>5%帯はROI=0% (calibration不良) のため除外
     sanrentan:
       calibration_factor: 0.18  # avg_model_prob=39.9% / 実際7.0% → 10x過大評価補正
       max_odds: 25.0            # 大穴抑制を維持

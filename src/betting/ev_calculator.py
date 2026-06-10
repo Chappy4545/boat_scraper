@@ -100,11 +100,12 @@ def generate_bets(
     cands_df.loc[mask_odds_high, ["is_pass", "pass_reason"]] = [True, f"大穴除外({max_odds}超)"]
     cands_df.loc[mask_no_odds, ["is_pass", "pass_reason"]] = [True, "オッズなし"]
 
-    # bet_type別オーバーライド（min_odds / max_odds / min_ev）
+    # bet_type別オーバーライド（min_odds / max_odds / min_ev / max_model_prob）
     for bt, ov in overrides.items():
         bt_min_odds = ov.get("min_odds")
         bt_max_odds = ov.get("max_odds")
         bt_min_ev = ov.get("min_ev")
+        bt_max_mp = ov.get("max_model_prob")
         active = (~cands_df["is_pass"]) & (cands_df["bet_type"] == bt)
         if bt_min_odds is not None:
             mask = active & (cands_df["odds"] < bt_min_odds)
@@ -117,6 +118,11 @@ def generate_bets(
         if bt_min_ev is not None:
             mask = active & (cands_df["expected_value"] < bt_min_ev)
             cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"EV < {bt_min_ev}/{bt}"]
+            active = (~cands_df["is_pass"]) & (cands_df["bet_type"] == bt)
+        if bt_max_mp is not None:
+            # model_prob が高い帯は実績の的中率が逆相関 (calibration不良) のため除外
+            mask = active & (cands_df["model_prob"] > bt_max_mp)
+            cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"model_prob>{bt_max_mp}/{bt}"]
 
     # 買い目を EV 降順でソート、上限本数まで
     buy = cands_df[~cands_df["is_pass"]].sort_values("expected_value", ascending=False)
