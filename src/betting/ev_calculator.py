@@ -90,23 +90,26 @@ def generate_bets(
 
     cands_df = pd.DataFrame(candidates)
 
-    # PL経由の場合は既に正しくキャリブレーションされた joint probability なので補正スキップ
-    if not pl_probs:
-        # bet_type別オーバーライド: calibration_table (帯別実測補正) or calibration_factor を適用
-        # calibration_table: [{"raw_mp_max": 0.30, "hit_rate": 0.027}, ...]
-        #   raw_mp <= raw_mp_max の最初のエントリの hit_rate を適用
-        for bt, ov in overrides.items():
+    # calibration の適用: PL経由も従来経由も、実測に基づく補正が必要
+    # PL経由 の場合は calibration_table_pl を優先、なければ通常のを使う
+    #   (2026-07-06: 7/5 out-of-sample で PL も過大評価が判明したため PL用テーブルを導入)
+    for bt, ov in overrides.items():
+        if pl_probs:
+            table = ov.get("calibration_table_pl") or ov.get("calibration_table")
+        else:
             table = ov.get("calibration_table")
-            if table:
+
+        if table:
+            mask = cands_df["bet_type"] == bt
+            cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"].apply(
+                lambda p: _apply_calibration_table(p, table)
+            )
+        elif not pl_probs:
+            # PL経由には calibration_factor を適用しない (未対応)
+            factor = ov.get("calibration_factor", 1.0)
+            if factor != 1.0:
                 mask = cands_df["bet_type"] == bt
-                cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"].apply(
-                    lambda p: _apply_calibration_table(p, table)
-                )
-            else:
-                factor = ov.get("calibration_factor", 1.0)
-                if factor != 1.0:
-                    mask = cands_df["bet_type"] == bt
-                    cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"] * factor
+                cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"] * factor
 
     # オッズをマージ
     cands_df = _merge_odds(cands_df, odds_df)

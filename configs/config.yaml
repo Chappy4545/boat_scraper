@@ -50,6 +50,8 @@ betting:
     nirenfuku:
       calibration_factor: 0.18  # 2026-06-14: 新モデル 67件1的中(1.5%) を受けて 0.37→0.18 へ慎重に調整
                                 # (理論値は0.07だがサンプル小のため中間値を採用)
+      # PL経由も現状は補正なし (7/5実測ROI=101%で概ね釣り合い、帯別も非単調)
+      # サンプル増えたら calibration_table_pl 検討
     sanrenfuku:
       calibration_factor: 0.10  # 2026-06-14: 新モデル 8件0的中 を受けて 0.16→0.10 (8件は小さすぎてゼロ化はしない)
       min_ev: 1.5               # sanrenfukuは少し高めに設定
@@ -66,6 +68,17 @@ betting:
           hit_rate: 0.050   # n=242, hits=12 (実測 4.96%)
         - raw_mp_max: 1.00
           hit_rate: 0.105   # n=114, hits=12 (実測 10.53%)
+      # 2026-07-06: PL out-of-sample (7/5, 123件) 実測から専用テーブル
+      # sanrentanは10%以上帯で 0/31 と壊滅 → 5-10%帯のみ狙う
+      calibration_table_pl:
+        - raw_mp_max: 0.05
+          hit_rate: 0.020   # n=2 (小サンプル、保守的)
+        - raw_mp_max: 0.10
+          hit_rate: 0.046   # n=87 hit=4.60% (実測)
+        - raw_mp_max: 0.15
+          hit_rate: 0.010   # n=20 hit=0% (壊滅、保守的)
+        - raw_mp_max: 1.00
+          hit_rate: 0.010   # 高帯は狙わない
       calibration_factor: 0.14  # fallback (calibration_tableが優先)
       max_odds: 25.0            # 大穴抑制を維持
 
