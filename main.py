@@ -194,7 +194,7 @@ def cmd_collect_range(date_from: str, date_to: str,
 
 def cmd_train(date_from: str | None = None, date_to: str | None = None):
     from src.features.builder import build_features
-    from src.models.trainer import train_all
+    from src.models.trainer import train_all, train_ranker
     from src.ingestion.database import init_db
     config = load_config()
     init_db(config)
@@ -208,11 +208,16 @@ def cmd_train(date_from: str | None = None, date_to: str | None = None):
     for target, scores in results.items():
         logger.info(f"  {target}: {scores}")
 
+    # LambdaRank も同時に訓練 (Plackett-Luce用の強さスコア)
+    logger.info("LambdaRank 学習開始 (Plackett-Luce用ranker)")
+    ranker_summary = train_ranker(df, config)
+    logger.info(f"  ranker: {ranker_summary}")
+
 
 def cmd_predict(target_date: date | None = None):
     from src.ingestion.database import init_db, get_session, get_engine
     from src.ingestion.models import Race, Bet
-    from src.models.predictor import predict_race, save_predictions
+    from src.models.predictor import predict_race, save_predictions, predict_race_pl
     from src.betting.ev_calculator import generate_bets
     from src.betting.money_manager import MoneyManager
     from src.backtest.runner import _load_odds
@@ -224,12 +229,14 @@ def cmd_predict(target_date: date | None = None):
     d = target_date or date.today()
     engine = get_engine()
     model_version = config.get("model", {}).get("version", "v1")
+    use_ranker = config.get("model", {}).get("use_ranker", False)
+    pl_temperature = float(config.get("model", {}).get("pl_temperature", 1.0))
 
     with get_session() as session:
         races = session.query(Race).filter(Race.race_date == d).all()
         race_ids = [r.id for r in races]
 
-    logger.info(f"{d}: {len(race_ids)} レースを予測・買い目生成")
+    logger.info(f"{d}: {len(race_ids)} レースを予測・買い目生成 (use_ranker={use_ranker})")
     mm = MoneyManager(config)
     state = mm.new_state()
     bet_count = 0
@@ -246,7 +253,8 @@ def cmd_predict(target_date: date | None = None):
             odds_df = _load_odds(engine, rid)
 
             # 買い目生成（EV計算）
-            bets_df = generate_bets(pred_df, odds_df, config, model_version)
+            pl_probs = predict_race_pl(rid, temperature=pl_temperature) if use_ranker else None
+            bets_df = generate_bets(pred_df, odds_df, config, model_version, pl_probs=pl_probs)
 
             # bets テーブルへ保存（既存削除→再挿入）
             with get_session() as session:

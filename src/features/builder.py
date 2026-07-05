@@ -320,7 +320,8 @@ def _add_targets(df: pd.DataFrame, engine) -> pd.DataFrame:
         res["target_top2"] = (res["arrival_order"] <= 2).astype(int)
         res["target_top3"] = (res["arrival_order"] <= 3).astype(int)
         df = df.merge(
-            res[["race_id", "boat_no", "target_win", "target_top2", "target_top3"]],
+            res[["race_id", "boat_no", "arrival_order",
+                 "target_win", "target_top2", "target_top3"]],
             on=["race_id", "boat_no"],
             how="left",
         )

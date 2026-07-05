@@ -97,6 +97,105 @@ def load_model(target: str) -> object | None:
     return joblib.load(candidates[-1])
 
 
+def load_ranker() -> object | None:
+    """LambdaRankモデルを読み込む。"""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    candidates = list(MODEL_DIR.glob("ranker_*.joblib"))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime)
+    return joblib.load(candidates[-1])
+
+
+def train_ranker(df: pd.DataFrame, config: dict | None = None) -> dict:
+    """LambdaRank モデルを学習する (Plackett-Luce用の強さスコア学習)。
+
+    - group: race_id (各レース=6艇)
+    - label: relevance = 4 - min(3, arrival_order-1) つまり
+             1着=3, 2着=2, 3着=1, 4-6着=0
+    - 目的: 各艇の相対的な強さスコアを学習
+    """
+    if config is None:
+        config = load_config()
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+    df_clean = _prepare(df)
+    if df_clean.empty or "arrival_order" not in df_clean.columns:
+        logger.error("ranker学習: arrival_orderが必要")
+        return {}
+
+    mask = df_clean["arrival_order"].notna() & df_clean["arrival_order"] > 0
+    df_c = df_clean.loc[mask].copy()
+    if df_c.empty:
+        logger.error("ranker学習: 有効データなし")
+        return {}
+
+    # relevance: 1着=3, 2着=2, 3着=1, 4-6着=0
+    df_c["_rel"] = (4 - df_c["arrival_order"].astype(int).clip(1, 4)).clip(0, 3)
+
+    # race_id順にソート (group 分割の前提)
+    df_c = df_c.sort_values(["race_date", "race_id", "boat_no"]).reset_index(drop=True)
+    X = df_c[FEATURE_COLS].values
+    y = df_c["_rel"].astype(int).values
+    groups = df_c.groupby("race_id", sort=False).size().values  # 各グループのサイズ
+    dates = pd.to_datetime(df_c["race_date"]).values
+
+    logger.info(f"=== ranker: {len(y)} 行, {len(groups)} レース ===")
+
+    # 欠損補完 (訓練前の中央値)
+    medians = np.nanmedian(X, axis=0)
+    X_filled = np.where(np.isnan(X), medians, X)
+
+    # LightGBM Ranker
+    rs = config["model"].get("random_state", 42)
+    ranker = lgb.LGBMRanker(
+        objective="lambdarank",
+        n_estimators=500,
+        learning_rate=0.05,
+        max_depth=6,
+        num_leaves=31,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_samples=20,
+        random_state=rs,
+        n_jobs=-1,
+        verbose=-1,
+        label_gain=[0, 1, 3, 7],  # 0,1,2,3 relevance に対する gain
+    )
+    ranker.fit(X_filled, y, group=groups)
+
+    # 予測時用の中央値を同梱
+    ranker._medians = medians
+    ranker._feature_cols = FEATURE_COLS
+
+    model_path = MODEL_DIR / "ranker_lightgbm.joblib"
+    joblib.dump(ranker, model_path)
+    logger.info(f"保存: {model_path}")
+
+    # 簡易評価: 予測順位と実順位の相関
+    try:
+        scores = ranker.predict(X_filled)
+        df_c["_score"] = scores
+        # 各race内でscoreをrank化(降順=1位)
+        df_c["_pred_rank"] = df_c.groupby("race_id")["_score"].rank(ascending=False, method="min")
+        # 1着当てた率
+        top1_correct = int(((df_c["arrival_order"] == 1) & (df_c["_pred_rank"] == 1)).sum())
+        n_races = int(df_c["race_id"].nunique())
+        top1_hit = top1_correct / n_races if n_races else 0.0
+        logger.info(f"  ranker top1的中率: {top1_hit:.4f} ({top1_correct}/{n_races})")
+    except Exception as e:
+        logger.warning(f"ranker評価失敗: {e}")
+        top1_hit = None
+
+    summary = {
+        "type": "lambdarank",
+        "n_rows": len(y),
+        "n_races": int(len(groups)),
+        "top1_hit_rate": top1_hit,
+    }
+    return summary
+
+
 # ──────────────────────────────────────────────
 # 内部実装
 # ──────────────────────────────────────────────

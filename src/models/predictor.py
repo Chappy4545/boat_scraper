@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 
 from src.features.builder import FEATURE_COLS, TARGET_COLS, build_features_for_race
-from src.models.trainer import load_model
+from src.models.trainer import load_model, load_ranker
+from src.models import plackett_luce as pl
 from src.ingestion.database import get_session
 from src.ingestion.models import Prediction
 from src.utils.logger import get_logger
@@ -16,6 +17,7 @@ from src.utils.helpers import load_config
 logger = get_logger(__name__)
 
 _MODEL_CACHE: dict[str, object] = {}
+_RANKER_CACHE: dict[str, object] = {}
 
 
 def _get_model(target: str):
@@ -25,6 +27,42 @@ def _get_model(target: str):
             raise RuntimeError(f"モデル未学習: {target} — python main.py train を実行してください")
         _MODEL_CACHE[target] = m
     return _MODEL_CACHE[target]
+
+
+def _get_ranker():
+    if "ranker" not in _RANKER_CACHE:
+        r = load_ranker()
+        _RANKER_CACHE["ranker"] = r
+    return _RANKER_CACHE["ranker"]
+
+
+def predict_race_ranker(race_id: int) -> dict[int, float]:
+    """LambdaRankモデルで各艇の強さスコア (raw score) を計算する。
+
+    Returns
+    -------
+    dict boat_no -> score  (Plackett-Luce用の生スコア)
+    """
+    ranker = _get_ranker()
+    if ranker is None:
+        return {}
+    df = build_features_for_race(race_id)
+    if df.empty:
+        return {}
+    X = _prepare_X(df)
+    scores = ranker.predict(X)
+    return {int(row["boat_no"]): float(s) for (_, row), s in zip(df.iterrows(), scores)}
+
+
+def predict_race_pl(race_id: int, temperature: float = 1.0) -> dict:
+    """Plackett-Luce で全 bet_type × 全組合せの確率を計算。
+
+    Returns: pl.all_bet_probs() の戻り値
+    """
+    scores = predict_race_ranker(race_id)
+    if not scores:
+        return {}
+    return pl.all_bet_probs(scores, temperature=temperature)
 
 
 def predict_race(race_id: int, model_version: str = "v1") -> pd.DataFrame:

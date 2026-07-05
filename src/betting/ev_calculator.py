@@ -32,6 +32,7 @@ def generate_bets(
     odds_df: pd.DataFrame,
     config: dict,
     model_version: str = "v1",
+    pl_probs: dict | None = None,
 ) -> pd.DataFrame:
     """
     予測確率とオッズから推奨買い目を生成する。
@@ -40,6 +41,8 @@ def generate_bets(
     ----------
     pred_df  : boat_no / win_prob / top2_prob / top3_prob / confidence
     odds_df  : bet_type / combination / odds
+    pl_probs : (option) Plackett-Luce で事前計算された {bet_type: [{combination, model_prob}]}
+               指定時は独立モデル合成をスキップして PL の joint prob を直接使う
 
     Returns
     -------
@@ -62,11 +65,25 @@ def generate_bets(
     if confidence < min_conf:
         return _pass_df(f"モデル信頼度不足 ({confidence:.3f} < {min_conf})")
 
-    # 各買い式の推定確率を計算
+    # 買い目候補の生成: PL経由 or 独立モデル合成経由
     candidates = []
-    for bet_type in bet_types:
-        rows = _calc_bet_probs(pred_df, bet_type)
-        candidates.extend(rows)
+    bt_to_db_name = {"2連単": "nirentan", "2連複": "nirenfuku",
+                      "3連単": "sanrentan", "3連複": "sanrenfuku"}
+    if pl_probs:
+        # Plackett-Luce の確率をそのまま使う (calibration_factor不要)
+        for bet_type in bet_types:
+            db_name = bt_to_db_name.get(bet_type, bet_type)
+            for combo in pl_probs.get(db_name, []):
+                candidates.append({
+                    "bet_type": db_name,
+                    "combination": combo["combination"],
+                    "model_prob": max(0.0, min(1.0, float(combo["model_prob"]))),
+                })
+    else:
+        # 従来: win/top2/top3 独立モデルから joint 合成
+        for bet_type in bet_types:
+            rows = _calc_bet_probs(pred_df, bet_type)
+            candidates.extend(rows)
 
     if not candidates:
         return _pass_df("買い目候補なし")
