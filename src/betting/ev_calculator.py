@@ -73,12 +73,21 @@ def generate_bets(
 
     cands_df = pd.DataFrame(candidates)
 
-    # bet_type別オーバーライド: calibration_factor を model_prob に適用
+    # bet_type別オーバーライド: calibration_table (帯別実測補正) or calibration_factor を適用
+    # calibration_table: [{"raw_mp_max": 0.30, "hit_rate": 0.027}, ...]
+    #   raw_mp <= raw_mp_max の最初のエントリの hit_rate を適用
     for bt, ov in overrides.items():
-        factor = ov.get("calibration_factor", 1.0)
-        if factor != 1.0:
+        table = ov.get("calibration_table")
+        if table:
             mask = cands_df["bet_type"] == bt
-            cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"] * factor
+            cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"].apply(
+                lambda p: _apply_calibration_table(p, table)
+            )
+        else:
+            factor = ov.get("calibration_factor", 1.0)
+            if factor != 1.0:
+                mask = cands_df["bet_type"] == bt
+                cands_df.loc[mask, "model_prob"] = cands_df.loc[mask, "model_prob"] * factor
 
     # オッズをマージ
     cands_df = _merge_odds(cands_df, odds_df)
@@ -189,6 +198,25 @@ def _prob_sanrentan(boats: dict, a: int, b: int, c: int) -> float:
     rem_c = max(1 - boats[a]["win_prob"] - boats[b]["win_prob"], 1e-9)
     p_c_given_ab = min(1.0, max(boats[c]["top3_prob"] - boats[c]["top2_prob"], 0) / rem_c)
     return max(0, p_a * p_b_given_a * p_c_given_ab)
+
+
+def _apply_calibration_table(raw_mp: float, table: list) -> float:
+    """帯別実測補正: raw_mp <= raw_mp_max の最初のエントリの hit_rate を返す。
+
+    table = [
+        {"raw_mp_max": 0.30, "hit_rate": 0.027},
+        {"raw_mp_max": 0.50, "hit_rate": 0.050},
+        {"raw_mp_max": 1.00, "hit_rate": 0.105},
+    ]
+    """
+    if raw_mp is None or (isinstance(raw_mp, float) and (raw_mp != raw_mp)):
+        return 0.0
+    for entry in table:
+        upper = entry.get("raw_mp_max", 1.0)
+        if raw_mp <= upper:
+            return float(entry.get("hit_rate", raw_mp))
+    # 全帯を超えた場合は最後のエントリを適用
+    return float(table[-1].get("hit_rate", raw_mp))
 
 
 def _merge_odds(df: pd.DataFrame, odds_df: pd.DataFrame) -> pd.DataFrame:

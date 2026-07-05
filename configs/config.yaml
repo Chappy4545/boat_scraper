@@ -56,8 +56,17 @@ betting:
       min_odds: 25.0            # 高オッズ特化を維持
       max_model_prob: 0.05      # 2026-06-10: pred>5%帯はROI=0% (calibration不良) のため除外
     sanrentan:
-      calibration_factor: 0.14  # 2026-07-05: 5日累計 429件26的中(6.06%) から理論再計算 → 0.22→0.14
-                                # (5日で損益-12,420円のうち大半がsanrentan由来。絞り込み優先)
+      # 2026-07-05: 帯別実測補正テーブル (calibration_table) を導入
+      # 5日累計429件から集計: raw_mp 20-30%帯 hit=2.74%, 30-50%帯 hit=4.96%, 50%+帯 hit=10.53%
+      # 一律factorでは各帯で1.5-3倍の誤差 → 帯別補正
+      calibration_table:
+        - raw_mp_max: 0.30
+          hit_rate: 0.028   # n=73, hits=2 (実測 2.74%)
+        - raw_mp_max: 0.50
+          hit_rate: 0.050   # n=242, hits=12 (実測 4.96%)
+        - raw_mp_max: 1.00
+          hit_rate: 0.105   # n=114, hits=12 (実測 10.53%)
+      calibration_factor: 0.14  # fallback (calibration_tableが優先)
       max_odds: 25.0            # 大穴抑制を維持
 
 money_management:
