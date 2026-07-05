@@ -56,8 +56,8 @@ betting:
       min_odds: 25.0            # 高オッズ特化を維持
       max_model_prob: 0.05      # 2026-06-10: pred>5%帯はROI=0% (calibration不良) のため除外
     sanrentan:
-      calibration_factor: 0.22  # 2026-06-14: 新モデル 67件8的中(11.9%) を受けて 0.18→0.22 へ控えめに上げる
-                                # (理論値0.258だが小サンプルのため中間値)
+      calibration_factor: 0.14  # 2026-07-05: 5日累計 429件26的中(6.06%) から理論再計算 → 0.22→0.14
+                                # (5日で損益-12,420円のうち大半がsanrentan由来。絞り込み優先)
       max_odds: 25.0            # 大穴抑制を維持
 
 money_management:
