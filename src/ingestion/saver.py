@@ -317,6 +317,7 @@ def save_day(data: dict) -> dict:
     _save("odds_sanrenfuku", save_odds, True)
     _save("odds_nirentan", save_odds, True)
     _save("odds_nirenfuku", save_odds, True)
+    _save("odds_tansho", save_odds, True)
     _save("race_result", save_race_result)
     _save("payouts", save_payouts)
 

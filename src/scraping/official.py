@@ -27,6 +27,7 @@ _URLS = {
     "odds3t":     "/owpc/pc/race/odds3t",
     "odds3f":     "/owpc/pc/race/odds3f",
     "odds2tf":    "/owpc/pc/race/odds2tf",
+    "oddstf":     "/owpc/pc/race/oddstf",     # 単勝・複勝
     "raceresult": "/owpc/pc/race/raceresult",
     "index":      "/owpc/pc/race/index",
     "pay":        "/owpc/pc/race/pay",
@@ -642,6 +643,42 @@ class BoatRaceScraper(BaseScraper):
     # ------------------------------------------------------------------
     # 2連単 / 2連複オッズ
     # ------------------------------------------------------------------
+    def get_odds_tansho(self, stadium_code: str, race_date: date, race_no: int) -> pd.DataFrame:
+        html = self._fetch_raw(self._url("oddstf"), self._params(stadium_code, race_date, race_no))
+        return self._parse_odds_tansho(html, stadium_code, race_date, race_no)
+
+    def _parse_odds_tansho(self, html: str, stadium_code: str,
+                            race_date: date, race_no: int) -> pd.DataFrame:
+        """単勝: oddstf の table[1]。各行 [艇番, 選手名, 単勝オッズ]"""
+        soup = BeautifulSoup(html, "lxml")
+        tables = soup.find_all("table")
+        if len(tables) < 2:
+            return pd.DataFrame()
+        # table[1] = 単勝オッズ表
+        rows = []
+        for tr in tables[1].find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) < 3:
+                continue
+            boat_txt = tds[0].get_text(strip=True)
+            odds_txt = tds[2].get_text(strip=True)
+            if not boat_txt.isdigit():
+                continue
+            boat_no = int(boat_txt)
+            try:
+                odds = float(odds_txt)
+            except (ValueError, TypeError):
+                continue
+            rows.append({
+                "stadium_code": stadium_code,
+                "race_date": race_date,
+                "race_no": race_no,
+                "bet_type": "tansho",
+                "combination": str(boat_no),
+                "odds": odds,
+            })
+        return pd.DataFrame(rows)
+
     def get_odds_nirentan(self, stadium_code: str, race_date: date, race_no: int) -> pd.DataFrame:
         html = self._fetch_raw(self._url("odds2tf"), self._params(stadium_code, race_date, race_no))
         return self._parse_odds_nirentan(html, stadium_code, race_date, race_no)
@@ -945,6 +982,7 @@ class BoatRaceScraper(BaseScraper):
             "racelist": [], "before_info": [], "weather": [],
             "odds_sanrentan": [], "odds_sanrenfuku": [],
             "odds_nirentan": [], "odds_nirenfuku": [],
+            "odds_tansho": [],
             "race_result": [], "payouts": [],
         }
         for rno in range(1, 13):
@@ -975,6 +1013,10 @@ class BoatRaceScraper(BaseScraper):
                     buckets["odds_nirenfuku"].append(self._parse_odds_nirenfuku(html2, *params))
                 except Exception as e:
                     logger.warning(f"2連オッズ取得失敗 {code} R{rno}: {e}")
+                try:
+                    buckets["odds_tansho"].append(self.get_odds_tansho(*params))
+                except Exception as e:
+                    logger.warning(f"単勝取得失敗 {code} R{rno}: {e}")
             try:
                 rr, py = self.get_race_result_and_payouts(*params)
                 buckets["race_result"].append(rr)
@@ -1005,6 +1047,7 @@ class BoatRaceScraper(BaseScraper):
             "racelist": [], "before_info": [], "weather": [],
             "odds_sanrentan": [], "odds_sanrenfuku": [],
             "odds_nirentan": [], "odds_nirenfuku": [],
+            "odds_tansho": [],
             "race_result": [], "payouts": [],
         }
 
