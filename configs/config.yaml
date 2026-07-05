@@ -87,7 +87,8 @@ model:
   # 2026-07-05: LambdaRank + Plackett-Luce の切替スイッチ
   # true: ranker のスコアから Plackett-Luce で joint probability を導出（calibration_factor不要）
   # false: 従来の独立win/top2/top3モデル + calibration_factor
-  use_ranker: false
+  # 2026-07-06: バックテスト比較 (6/14-6/27) で 損益 -12,420→-120 の劇的改善 → true化
+  use_ranker: true
   pl_temperature: 1.0   # softmax温度 (小さい=より鋭く、大きい=より均等)
 
 api:
