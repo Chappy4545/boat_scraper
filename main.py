@@ -292,10 +292,11 @@ def cmd_predict(target_date: date | None = None):
     logger.info(f"予測完了: 推奨買い目 {bet_count} 件")
 
     # 予測後に自動エクスポート
-    from src.export import export_day, export_performance, export_probs, export_meta
+    from src.export import export_day, export_performance, export_probs, export_meta, export_pdca
     export_day(d)
     export_performance()
     export_probs(d)
+    export_pdca()
     export_meta(source="local")
 
 
@@ -353,9 +354,10 @@ def cmd_judge(target_date: date | None = None):
     logger.info(f"的中判定完了: {d} {judged}件")
 
     # 判定後にエクスポートを更新
-    from src.export import export_day, export_performance
+    from src.export import export_day, export_performance, export_pdca
     export_day(d)
     export_performance()
+    export_pdca()
 
 
 def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):

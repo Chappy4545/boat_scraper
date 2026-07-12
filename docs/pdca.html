@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PDCA — 艇予想</title>
+<style>
+  :root {
+    --bg: #0a1628;
+    --card: #142338;
+    --border: #223956;
+    --text: #e6ecf5;
+    --sub: #8fa4c2;
+    --ok: #48d17c;
+    --warn: #f5c542;
+    --bad: #e85d5d;
+    --link: #6faaff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "Noto Sans JP", sans-serif;
+  }
+  header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 15px; margin: 20px 0 8px; color: var(--sub); }
+  .sub { color: var(--sub); font-size: 12px; }
+  .nav a { color: var(--link); text-decoration: none; margin-left: 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px; margin-bottom: 12px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--sub); font-weight: 500; }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .kpi {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+  }
+  .kpi__label { color: var(--sub); font-size: 11px; text-transform: uppercase; }
+  .kpi__value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .kpi__sub { color: var(--sub); font-size: 11px; margin-top: 2px; }
+  .bar-cell {
+    position: relative; overflow: hidden;
+  }
+  .bar-cell .fill {
+    position: absolute; top: 0; bottom: 0; left: 0; background: rgba(72,209,124,0.15);
+    z-index: 0;
+  }
+  .bar-cell.bad .fill { background: rgba(232,93,93,0.18); }
+  .bar-cell span { position: relative; z-index: 1; }
+  .window-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .window-tabs button {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+    padding: 4px 12px; border-radius: 16px; cursor: pointer; font-size: 12px;
+  }
+  .window-tabs button.active { background: var(--link); color: #04101f; border-color: var(--link); }
+  #chart-wrap { position: relative; height: 240px; }
+  svg { width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>PDCA ダッシュボード</h1>
+    <div class="sub" id="meta">読み込み中…</div>
+  </div>
+  <div class="nav">
+    <a href="index.html">← 買い目に戻る</a>
+  </div>
+</header>
+
+<h2>実績サマリー</h2>
+<div class="window-tabs">
+  <button data-w="7d" class="active">7日</button>
+  <button data-w="30d">30日</button>
+  <button data-w="all">全期間</button>
+</div>
+<div class="grid" id="kpi-grid"></div>
+
+<h2>Bet Type別</h2>
+<div class="card">
+  <table id="by-bet-type"></table>
+</div>
+
+<h2>Calibration Recheck (直近30日)</h2>
+<div class="card">
+  <div class="sub" style="margin-bottom: 8px;">
+    config.yamlの calibration_table_pl 各行の設定値 vs 実測hit率。乖離50%以上は要見直し。
+  </div>
+  <table id="calibration"></table>
+</div>
+
+<h2>Model_Prob 帯別 (直近30日)</h2>
+<div class="card">
+  <div class="sub" style="margin-bottom: 8px;">
+    ROI &lt; 0.8 は改善余地、&gt; 1.2 は狙い目。
+  </div>
+  <table id="bands"></table>
+</div>
+
+<h2>累積損益 (直近90日)</h2>
+<div class="card">
+  <div id="chart-wrap"></div>
+  <div class="sub" id="chart-legend" style="margin-top: 8px;"></div>
+</div>
+
+<h2>日次実績 (直近30日)</h2>
+<div class="card">
+  <table id="daily"></table>
+</div>
+
+<script>
+const fmtInt = n => (n ?? 0).toLocaleString();
+const fmtPct = (n, d=1) => n == null ? '-' : (n * 100).toFixed(d) + '%';
+const fmtSigned = n => n == null ? '-' : (n >= 0 ? '+' : '') + n.toLocaleString();
+const clsROI = roi => roi == null ? '' : (roi >= 1.05 ? 'ok' : roi >= 0.90 ? 'warn' : 'bad');
+const clsDelta = d => d == null ? '' : (Math.abs(d) < 20 ? 'ok' : Math.abs(d) < 50 ? 'warn' : 'bad');
+
+function renderKPI(w) {
+  const total = w.total;
+  const el = document.getElementById('kpi-grid');
+  el.innerHTML = `
+    <div class="kpi">
+      <div class="kpi__label">Bets</div>
+      <div class="kpi__value">${fmtInt(total.bets)}</div>
+      <div class="kpi__sub">of which hits ${fmtInt(total.hits)}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__label">Hit Rate</div>
+      <div class="kpi__value">${fmtPct(total.hit_rate, 1)}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__label">ROI</div>
+      <div class="kpi__value ${clsROI(total.roi)}">${fmtPct(total.roi, 1)}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi__label">Profit</div>
+      <div class="kpi__value ${total.profit >= 0 ? 'ok' : 'bad'}">${fmtSigned(total.profit)}</div>
+      <div class="kpi__sub">投資 ${fmtInt(total.invested)} / 回収 ${fmtInt(total.returned)}</div>
+    </div>`;
+}
+
+function renderByBetType(w) {
+  const rows = Object.entries(w.by_bet_type).map(([bt, agg]) => `
+    <tr>
+      <td>${bt}</td>
+      <td>${fmtInt(agg.bets)}</td>
+      <td>${fmtInt(agg.hits)}</td>
+      <td>${fmtPct(agg.hit_rate, 1)}</td>
+      <td class="${clsROI(agg.roi)}">${fmtPct(agg.roi, 1)}</td>
+      <td class="${agg.profit >= 0 ? 'ok' : 'bad'}">${fmtSigned(agg.profit)}</td>
+    </tr>`).join('');
+  document.getElementById('by-bet-type').innerHTML = `
+    <thead><tr><th>Bet Type</th><th>Bets</th><th>Hits</th><th>Hit%</th><th>ROI</th><th>Profit</th></tr></thead>
+    <tbody>${rows}</tbody>`;
+}
+
+function renderCalibration(rows) {
+  const trs = rows.map(r => `
+    <tr>
+      <td>${r.bet_type}</td>
+      <td>raw ≤ ${r.raw_mp_max}</td>
+      <td>${fmtPct(r.config_hit_rate, 1)}</td>
+      <td>${fmtInt(r.actual_n)}</td>
+      <td>${fmtPct(r.actual_hit_rate, 1)}</td>
+      <td class="${clsDelta(r.delta_pct)}">${r.delta_pct == null ? '-' : (r.delta_pct >= 0 ? '+' : '') + r.delta_pct.toFixed(0) + '%'}</td>
+      <td class="${clsROI(r.actual_roi)}">${fmtPct(r.actual_roi, 1)}</td>
+    </tr>`).join('');
+  document.getElementById('calibration').innerHTML = `
+    <thead><tr><th>Bet</th><th>Bin</th><th>Config</th><th>N</th><th>実測</th><th>Δ%</th><th>ROI</th></tr></thead>
+    <tbody>${trs}</tbody>`;
+}
+
+function renderBands(rows) {
+  const trs = rows.map(r => {
+    const roi = r.roi ?? 0;
+    const pct = Math.min(100, Math.max(0, roi * 50));
+    const bad = roi < 0.8;
+    return `
+    <tr>
+      <td>${r.bet_type}</td>
+      <td>${r.band}</td>
+      <td>${fmtInt(r.n)}</td>
+      <td>${fmtInt(r.hits)}</td>
+      <td>${fmtPct(r.hit_rate, 1)}</td>
+      <td>${r.avg_odds ?? '-'}</td>
+      <td class="bar-cell ${bad ? 'bad' : ''}">
+        <span class="fill" style="width:${pct}%"></span>
+        <span class="${clsROI(r.roi)}">${fmtPct(r.roi, 1)}</span>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('bands').innerHTML = `
+    <thead><tr><th>Bet</th><th>Band</th><th>N</th><th>Hits</th><th>Hit%</th><th>Odds</th><th>ROI</th></tr></thead>
+    <tbody>${trs}</tbody>`;
+}
+
+function renderDaily(daily) {
+  const recent = daily.slice(0, 30);
+  const trs = recent.map(d => {
+    const t = d.total;
+    const byBt = Object.entries(d.by_bet_type).map(([bt, a]) =>
+      `${bt.substring(0,3)}: ${a.bets}件${a.hits ?? '-'}的中`).join(' / ');
+    return `
+    <tr>
+      <td>${d.date}</td>
+      <td>${fmtInt(t.bets)}</td>
+      <td>${t.hits ?? '-'}</td>
+      <td>${fmtPct(t.hit_rate, 1)}</td>
+      <td class="${clsROI(t.roi)}">${fmtPct(t.roi, 1)}</td>
+      <td class="${t.profit >= 0 ? 'ok' : 'bad'}">${fmtSigned(t.profit)}</td>
+      <td class="sub">${byBt}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('daily').innerHTML = `
+    <thead><tr><th>日付</th><th>Bets</th><th>Hits</th><th>Hit%</th><th>ROI</th><th>P&L</th><th>内訳</th></tr></thead>
+    <tbody>${trs}</tbody>`;
+}
+
+function renderChart(daily) {
+  // 直近90日を古い順に並べ、cumulative profit を計算
+  const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date));
+  let cum = 0;
+  const pts = sorted
+    .filter(d => d.total.hits != null)
+    .map(d => { cum += d.total.profit || 0; return {date: d.date, cum}; });
+  if (pts.length === 0) {
+    document.getElementById('chart-wrap').innerHTML = '<div class="sub">データなし</div>';
+    return;
+  }
+  const w = 800, h = 240, pad = 40;
+  const ys = pts.map(p => p.cum);
+  const yMin = Math.min(0, ...ys);
+  const yMax = Math.max(0, ...ys);
+  const yRange = yMax - yMin || 1;
+  const xScale = i => pad + (w - 2*pad) * (i / (pts.length - 1 || 1));
+  const yScale = y => h - pad - (h - 2*pad) * (y - yMin) / yRange;
+  const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(p.cum).toFixed(1)}`).join(' ');
+  const zeroY = yScale(0);
+  const finalCum = pts[pts.length - 1].cum;
+  const color = finalCum >= 0 ? '#48d17c' : '#e85d5d';
+  document.getElementById('chart-wrap').innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <line x1="${pad}" x2="${w-pad}" y1="${zeroY}" y2="${zeroY}" stroke="#8fa4c2" stroke-dasharray="4 4" stroke-width="1"/>
+      <path d="${line}" fill="none" stroke="${color}" stroke-width="2"/>
+      <text x="${pad}" y="${pad-8}" fill="#8fa4c2" font-size="11">累積 P&amp;L: ${fmtSigned(Math.round(finalCum))}円</text>
+      <text x="${pad}" y="${h-pad+16}" fill="#8fa4c2" font-size="11">${pts[0].date}</text>
+      <text x="${w-pad}" y="${h-pad+16}" fill="#8fa4c2" font-size="11" text-anchor="end">${pts[pts.length-1].date}</text>
+    </svg>`;
+  document.getElementById('chart-legend').textContent =
+    `${pts.length}日分 (判定済のみ). 開始 0円 → 終了 ${fmtSigned(Math.round(finalCum))}円`;
+}
+
+async function main() {
+  try {
+    const res = await fetch('data/pdca.json?t=' + Date.now());
+    const data = await res.json();
+    document.getElementById('meta').textContent =
+      `生成 ${data.generated_at} / モード: ${data.use_pl ? 'PL (LambdaRank)' : '独立モデル'}`;
+
+    let currentWindow = '7d';
+    const setWindow = (w) => {
+      currentWindow = w;
+      renderKPI(data.windows[w]);
+      renderByBetType(data.windows[w]);
+      document.querySelectorAll('.window-tabs button').forEach(b =>
+        b.classList.toggle('active', b.dataset.w === w));
+    };
+    document.querySelectorAll('.window-tabs button').forEach(b =>
+      b.addEventListener('click', () => setWindow(b.dataset.w)));
+    setWindow('7d');
+
+    renderCalibration(data.calibration_recheck);
+    renderBands(data.band_hit_rates);
+    renderDaily(data.daily);
+    renderChart(data.daily);
+  } catch (e) {
+    document.getElementById('meta').textContent = 'エラー: ' + e.message;
+    console.error(e);
+  }
+}
+main();
+</script>
+
+</body>
+</html>

@@ -263,3 +263,193 @@ def export_performance() -> None:
     path = DATA_DIR / "performance.json"
     path.write_text(json.dumps(perf, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(f"export: {path.name}")
+
+
+def export_pdca() -> None:
+    """PDCA判断用の集計をdocs/data/pdca.jsonに出力する。
+    - windows: 7d/30d/all の総合ROI + bet_type別
+    - band_hit_rates: model_prob帯 × bet_type の実測hit率とROI (直近30日)
+    - calibration_recheck: config.calibration_table_pl と実測の乖離
+    - daily: 日次実績を bet_type別まで分解 (直近90日)
+    """
+    _ensure_data_dir()
+    from datetime import datetime, timezone, timedelta
+    from src.ingestion.database import get_engine
+    from src.utils.helpers import load_config
+    from sqlalchemy import text as sa_text
+
+    JST = timezone(timedelta(hours=9))
+    now_jst = datetime.now(JST).strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    config = load_config()
+
+    engine = get_engine()
+
+    def _agg(rows):
+        """rows: iterable of (bets, hits, invested, returned) → dict"""
+        bets, hits, invested, returned = 0, 0, 0, 0
+        for r in rows:
+            bets += r[0] or 0
+            hits += r[1] or 0
+            invested += r[2] or 0
+            returned += r[3] or 0
+        return {
+            "bets": bets, "hits": hits, "invested": invested, "returned": returned,
+            "roi": round(returned / invested, 4) if invested else None,
+            "hit_rate": round(hits / bets, 4) if bets else None,
+            "profit": returned - invested,
+        }
+
+    def _window_query(days: int | None):
+        """days=None のときは全期間"""
+        where_date = "" if days is None else f"AND r.race_date >= date('now','-{days} days')"
+        sql = f"""
+            SELECT b.bet_type,
+                   COUNT(*) AS bets,
+                   SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END) AS hits,
+                   SUM(b.recommended_amount) AS invested,
+                   SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
+            FROM bets b JOIN races r ON b.race_id=r.id
+            WHERE b.is_pass=0 AND b.is_hit IS NOT NULL {where_date}
+            GROUP BY b.bet_type
+        """
+        with engine.connect() as conn:
+            return conn.execute(sa_text(sql)).fetchall()
+
+    def _window(days):
+        rows = _window_query(days)
+        by_bet_type = {r[0]: _agg([(r[1], r[2], r[3], r[4])]) for r in rows}
+        total = _agg([(r[1], r[2], r[3], r[4]) for r in rows])
+        return {"total": total, "by_bet_type": by_bet_type}
+
+    windows = {
+        "7d": _window(7),
+        "30d": _window(30),
+        "all": _window(None),
+    }
+
+    # band_hit_rates (直近30日)
+    band_sql = """
+        SELECT b.bet_type,
+               CASE
+                 WHEN b.model_prob < 0.03 THEN 1
+                 WHEN b.model_prob < 0.05 THEN 2
+                 WHEN b.model_prob < 0.07 THEN 3
+                 WHEN b.model_prob < 0.10 THEN 4
+                 WHEN b.model_prob < 0.15 THEN 5
+                 WHEN b.model_prob < 0.20 THEN 6
+                 WHEN b.model_prob < 0.30 THEN 7
+                 WHEN b.model_prob < 0.50 THEN 8
+                 ELSE 9
+               END AS band_idx,
+               COUNT(*) AS n,
+               SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END) AS hits,
+               AVG(b.odds) AS avg_odds,
+               AVG(b.model_prob) AS avg_mp,
+               SUM(b.recommended_amount) AS invested,
+               SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
+        FROM bets b JOIN races r ON b.race_id=r.id
+        WHERE b.is_pass=0 AND b.is_hit IS NOT NULL AND r.race_date >= date('now','-30 days')
+        GROUP BY b.bet_type, band_idx ORDER BY b.bet_type, band_idx
+    """
+    band_labels = {1:"0-3%",2:"3-5%",3:"5-7%",4:"7-10%",5:"10-15%",6:"15-20%",7:"20-30%",8:"30-50%",9:"50%+"}
+    with engine.connect() as conn:
+        band_rows = conn.execute(sa_text(band_sql)).fetchall()
+    band_hit_rates = []
+    for r in band_rows:
+        n, hits = r[2], r[3]
+        invested, returned = r[6] or 0, r[7] or 0
+        band_hit_rates.append({
+            "bet_type": r[0],
+            "band": band_labels[r[1]],
+            "band_idx": r[1],
+            "n": n,
+            "hits": hits,
+            "hit_rate": round(hits / n, 4) if n else None,
+            "avg_odds": round(r[4], 2) if r[4] else None,
+            "avg_model_prob": round(r[5], 4) if r[5] else None,
+            "roi": round(returned / invested, 4) if invested else None,
+        })
+
+    # calibration_recheck: config の calibration_table_pl 各行と実測を比較
+    # 実装: 設定の hit_rate (=calibrated model_prob 値) と一致する bet を抽出して実測hit率を出す
+    overrides = config.get("betting", {}).get("bet_type_overrides", {})
+    calibration_recheck = []
+    use_pl = config.get("model", {}).get("use_ranker", False)
+    for bt, ov in overrides.items():
+        table = None
+        if use_pl:
+            table = ov.get("calibration_table_pl") or ov.get("calibration_table")
+        else:
+            table = ov.get("calibration_table")
+        if not table:
+            continue
+        for i, entry in enumerate(table):
+            target = round(entry["hit_rate"], 6)
+            # calibrated値がtargetに近いbetを集計 (許容誤差0.0005)
+            sql = """
+                SELECT COUNT(*), SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END),
+                       SUM(b.recommended_amount),
+                       SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END)
+                FROM bets b JOIN races r ON b.race_id=r.id
+                WHERE b.is_pass=0 AND b.is_hit IS NOT NULL
+                  AND b.bet_type=:bt
+                  AND ABS(b.model_prob - :tgt) < 0.0005
+                  AND r.race_date >= date('now','-30 days')
+            """
+            with engine.connect() as conn:
+                row = conn.execute(sa_text(sql), {"bt": bt, "tgt": target}).fetchone()
+            n = row[0] or 0
+            hits = row[1] or 0
+            invested = row[2] or 0
+            returned = row[3] or 0
+            actual = hits / n if n else None
+            delta_pct = round(100 * (actual - entry["hit_rate"]) / entry["hit_rate"], 1) if actual is not None else None
+            calibration_recheck.append({
+                "bet_type": bt,
+                "row_idx": i,
+                "raw_mp_max": entry.get("raw_mp_max"),
+                "config_hit_rate": entry["hit_rate"],
+                "actual_n": n,
+                "actual_hits": hits,
+                "actual_hit_rate": round(actual, 4) if actual is not None else None,
+                "delta_pct": delta_pct,
+                "actual_roi": round(returned / invested, 4) if invested else None,
+            })
+
+    # daily × bet_type (直近90日)
+    daily_sql = """
+        SELECT r.race_date, b.bet_type,
+               COUNT(*) AS bets,
+               SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END) AS hits,
+               SUM(b.recommended_amount) AS invested,
+               SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
+        FROM bets b JOIN races r ON b.race_id=r.id
+        WHERE b.is_pass=0
+        GROUP BY r.race_date, b.bet_type
+        HAVING r.race_date >= date('now','-90 days')
+        ORDER BY r.race_date DESC, b.bet_type
+    """
+    with engine.connect() as conn:
+        daily_rows = conn.execute(sa_text(daily_sql)).fetchall()
+    daily_map: dict = {}
+    for r in daily_rows:
+        d_str = str(r[0])
+        entry = daily_map.setdefault(d_str, {"date": d_str, "total": _agg([]), "by_bet_type": {}})
+        agg = _agg([(r[2], r[3], r[4], r[5])])
+        entry["by_bet_type"][r[1]] = agg
+    for d_str, entry in daily_map.items():
+        rows = [(v["bets"], v["hits"], v["invested"], v["returned"]) for v in entry["by_bet_type"].values()]
+        entry["total"] = _agg(rows)
+    daily = sorted(daily_map.values(), key=lambda x: x["date"], reverse=True)
+
+    pdca = {
+        "generated_at": now_jst,
+        "use_pl": use_pl,
+        "windows": windows,
+        "band_hit_rates": band_hit_rates,
+        "calibration_recheck": calibration_recheck,
+        "daily": daily,
+    }
+    path = DATA_DIR / "pdca.json"
+    path.write_text(json.dumps(pdca, ensure_ascii=False, indent=None), encoding="utf-8")
+    logger.info(f"export: {path.name} (windows=3, bands={len(band_hit_rates)}, recheck={len(calibration_recheck)}, daily={len(daily)})")

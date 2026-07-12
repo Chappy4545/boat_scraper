@@ -1,0 +1,60 @@
+name: PDCA Notify
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'docs/data/pdca.json'
+      - 'docs/data/bets_*.json'
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'daily_push | morning_check | judge_done'
+        required: true
+        default: 'daily_push'
+      date:
+        description: 'YYYY-MM-DD (省略=今日)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine kind
+        id: kind
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "kind=${{ github.event.inputs.kind }}" >> "$GITHUB_OUTPUT"
+            echo "date_arg=${{ github.event.inputs.date }}" >> "$GITHUB_OUTPUT"
+          else
+            # push: commit messageから判定 (auto: update → daily_push, judge → judge_done)
+            MSG="${{ github.event.head_commit.message }}"
+            if echo "$MSG" | grep -qi "judge"; then
+              echo "kind=judge_done" >> "$GITHUB_OUTPUT"
+            else
+              echo "kind=daily_push" >> "$GITHUB_OUTPUT"
+            fi
+            echo "date_arg=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send notification
+        env:
+          NOTIFY_WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+        run: |
+          ARGS="--kind ${{ steps.kind.outputs.kind }}"
+          if [ -n "${{ steps.kind.outputs.date_arg }}" ]; then
+            ARGS="$ARGS --date ${{ steps.kind.outputs.date_arg }}"
+          fi
+          python scripts/notify.py $ARGS
