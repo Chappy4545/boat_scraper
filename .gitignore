@@ -42,3 +42,8 @@ pay_page_debug.html
 # スクリプト（自動生成）
 logs/collect_odds_loop.sh
 run_collect_then_train.sh
+
+# 検証用モデル・退避コピー (実験成果物。本番モデルのみ管理する)
+data/processed/models_backup_*/
+data/processed/models_cutoff_*/
+scratch_*

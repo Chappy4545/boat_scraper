@@ -47,59 +47,49 @@ def run_backtest(
 
     logger.info(f"バックテスト開始: {date_from} 〜 {date_to}")
 
-    # 全データ取得
-    df = build_features(date_from, date_to, include_target=True)
-    if df.empty:
-        logger.error("バックテスト: データなし")
-        return {}
-
-    # 目的変数が揃っているレースのみ
-    df = df.dropna(subset=["target_win"])
-
-    # 学習期間 / テスト期間を 60/40 で分割（時系列）
-    df = df.sort_values("race_date")
-    split_idx = int(len(df) * 0.6)
-    train_df = df.iloc[:split_idx]
-    test_df = df.iloc[split_idx:]
-
-    logger.info(f"学習: {len(train_df)} 行 / テスト: {len(test_df)} 行")
-
-    # モデル読み込み（学習済みを前提）
-    models = {t: load_model(t) for t in TARGET_COLS}
-    if any(m is None for m in models.values()):
-        logger.error("未学習モデルあり — python main.py train を先に実行")
-        return {}
-
-    # テスト期間でシミュレーション
-    mm = MoneyManager(config)
-    state = mm.new_state()
     engine = get_engine()
 
-    records = []
-    race_groups = test_df.groupby("race_id")
+    # 対象レース: odds(is_final=1) と結果が両方揃うレースのみ。
+    #   payouts は的中組合せしか持たないため、fallback を使うと
+    #   「外れ目はオッズなし→見送り」となり的中目だけ買う未来情報リークになる。
+    rows = _load_backtest_race_ids(engine, date_from, date_to)
+    if not rows:
+        logger.error("バックテスト: 対象レースなし（odds実在レースが0件）")
+        return {}
+    logger.info(f"対象レース: {len(rows)} 件（odds実在のみ）")
 
-    for race_id, race_df in race_groups:
+    use_ranker = config.get("model", {}).get("use_ranker", False)
+    pl_temperature = float(config.get("model", {}).get("pl_temperature", 1.0))
+
+    # 本番と同一の予測経路を使う（backtest/predict の乖離を排除）
+    from src.models.predictor import predict_race, predict_race_pl
+
+    mm = MoneyManager(config)
+    state = mm.new_state()
+
+    records = []
+
+    for race_id, race_date, stadium_code in rows:
         if state.check_stop(config):
             logger.warning(f"停止条件到達: {state.stop_reason}")
             break
 
-        # 予測
-        pred_df = _predict_from_df(race_df, models)
-        if pred_df.empty:
+        try:
+            pred_df = predict_race(race_id, model_version)
+            if pred_df.empty:
+                continue
+
+            odds_df = _load_odds(engine, int(race_id))
+
+            pl_probs = predict_race_pl(race_id, temperature=pl_temperature) if use_ranker else None
+            bets_df = generate_bets(pred_df, odds_df, config, model_version, pl_probs=pl_probs)
+        except Exception as e:
+            logger.warning(f"  race_id={race_id} 予測失敗: {e}")
             continue
-
-        # オッズ取得
-        odds_df = _load_odds(engine, int(race_id))
-
-        # 買い目生成
-        bets_df = generate_bets(pred_df, odds_df, config, model_version)
-
-        # 実際の結果
-        actual_top3 = _get_actual_result(race_df)
 
         for _, bet in bets_df.iterrows():
             if bet["is_pass"]:
-                records.append(_pass_record(race_df, bet))
+                records.append(_pass_record(race_id, race_date, stadium_code, bet))
                 continue
 
             amount = mm.calc_bet_amount(
@@ -111,14 +101,17 @@ def run_backtest(
             if amount == 0:
                 continue
 
-            is_hit, payout = _check_hit(bet, actual_top3, amount)
+            # 的中判定は本番 judge と同一方式（payouts 照合）
+            is_hit, payout = _judge_by_payouts(
+                engine, int(race_id), str(bet["bet_type"]), str(bet["combination"]), amount
+            )
             state.update_after_bet(amount, payout)
             state.check_stop(config)
 
             records.append({
                 "race_id": race_id,
-                "race_date": race_df["race_date"].iloc[0],
-                "stadium_code": race_df["stadium_code"].iloc[0],
+                "race_date": race_date,
+                "stadium_code": stadium_code,
                 "bet_type": bet["bet_type"],
                 "combination": bet["combination"],
                 "model_prob": bet["model_prob"],
@@ -142,108 +135,72 @@ def run_backtest(
 # 内部実装
 # ──────────────────────────────────────────────
 
-def _predict_from_df(race_df: pd.DataFrame, models: dict) -> pd.DataFrame:
-    import numpy as np
-    X = race_df[FEATURE_COLS].copy()
-    for col in FEATURE_COLS:
-        if col not in X.columns:
-            X[col] = np.nan
-        X[col] = pd.to_numeric(X[col], errors="coerce")
-    medians = X.median().fillna(0)
-    X = X.fillna(medians).values
+def _load_backtest_race_ids(engine, date_from: str, date_to: str) -> list[tuple]:
+    """バックテスト対象レースを返す。
 
-    results = []
-    for i, (_, row) in enumerate(race_df.iterrows()):
-        probs = {}
-        for target in TARGET_COLS:
-            try:
-                probs[target] = float(models[target].predict_proba(X[[i]])[0, 1])
-            except Exception:
-                probs[target] = 1 / 6
-        results.append({
-            "boat_no": int(row["boat_no"]),
-            "win_prob": probs.get("target_win", 1 / 6),
-            "top2_prob": probs.get("target_top2", 2 / 6),
-            "top3_prob": probs.get("target_top3", 3 / 6),
-        })
+    odds(is_final=1) と race_results が両方存在するレースに限定する。
+    payouts fallback を許すと外れ目のオッズが取れず、
+    「的中目だけ買える」未来情報リークが発生するため。
+    """
+    from sqlalchemy import text
+    sql = """
+        SELECT DISTINCT rc.id, rc.race_date, rc.stadium_id
+        FROM races rc
+        JOIN odds o ON o.race_id = rc.id AND o.is_final = 1
+        JOIN race_results rr ON rr.race_id = rc.id
+        WHERE rc.race_date BETWEEN :d1 AND :d2
+        ORDER BY rc.race_date, rc.id
+    """
+    with engine.connect() as conn:
+        rs = conn.execute(text(sql), {"d1": date_from, "d2": date_to})
+        return [(r[0], str(r[1]), r[2]) for r in rs]
 
-    pred_df = pd.DataFrame(results)
-    total_win = pred_df["win_prob"].sum()
-    if total_win > 0:
-        pred_df["win_prob"] /= total_win
-    total_top2 = pred_df["top2_prob"].sum()
-    if total_top2 > 0:
-        pred_df["top2_prob"] = pred_df["top2_prob"] / total_top2 * 2.0
-    total_top3 = pred_df["top3_prob"].sum()
-    if total_top3 > 0:
-        pred_df["top3_prob"] = pred_df["top3_prob"] / total_top3 * 3.0
-    pred_df["top2_prob"] = np.maximum(pred_df["top2_prob"], pred_df["win_prob"])
-    pred_df["top3_prob"] = np.maximum(pred_df["top3_prob"], pred_df["top2_prob"])
-    pred_df["confidence"] = pred_df["win_prob"].max()
-    return pred_df
+
+def _judge_by_payouts(engine, race_id: int, bet_type: str,
+                      combination: str, amount: int) -> tuple[bool, int]:
+    """的中判定。本番 cmd_judge と同一方式で payouts を照合する。
+
+    payouts に (race_id, bet_type, combination) が存在すれば的中。
+    払戻は payout(100円あたり) × amount / 100。
+    """
+    from sqlalchemy import text
+    sql = """SELECT payout FROM payouts
+             WHERE race_id = :rid AND bet_type = :bt AND combination = :cb
+             LIMIT 1"""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(sql), {"rid": race_id, "bt": bet_type, "cb": combination}
+        ).fetchone()
+    if row is None:
+        return False, 0
+    return True, int(float(row[0]) * amount / 100.0)
 
 
 def _load_odds(engine, race_id: int) -> pd.DataFrame:
+    """確定オッズを返す。オッズが無ければ空を返す（payouts へフォールバックしない）。
+
+    payouts は的中組合せしか持たないため、そこからオッズを作ると
+    「外れ目はオッズなし→見送り、的中目だけ購入可能」となり、
+    未来情報リークで回収率が実態より大幅に良く見える。
+    予測は本来レース前に行うものでありオッズ未取得なら見送るのが正しいので、
+    本番・バックテストとも fallback は許可しない。
+    """
     from sqlalchemy import text
     sql = "SELECT bet_type, combination, odds FROM odds WHERE race_id = :rid AND is_final = 1"
     with engine.connect() as conn:
-        df = pd.read_sql(text(sql), conn, params={"rid": race_id})
-        if not df.empty:
-            return df
-        # Fall back to payouts table (payout yen / 100 = odds multiplier)
-        pay_sql = """SELECT bet_type, combination, CAST(payout AS FLOAT) / 100.0 AS odds
-                     FROM payouts WHERE race_id = :rid
-                     AND bet_type IN ('sanrentan','sanrenfuku','nirentan','nirenfuku')"""
-        return pd.read_sql(text(pay_sql), conn, params={"rid": race_id})
+        return pd.read_sql(text(sql), conn, params={"rid": race_id})
 
 
-def _get_actual_result(race_df: pd.DataFrame) -> list[int]:
-    """着順順に枠番のリストを返す（最大3着まで）。"""
-    if "target_win" not in race_df.columns:
-        return []
-    # race_df は艇単位なので、target_win=1 の boat_no, target_top2=1 かつ win!=1 の boat_no...
-    order = []
-    for place, col in [(1, "target_win"), (2, "target_top2"), (3, "target_top3")]:
-        sub = race_df[race_df[col] == 1] if col in race_df.columns else pd.DataFrame()
-        for _, r in sub.iterrows():
-            if int(r["boat_no"]) not in order:
-                order.append(int(r["boat_no"]))
-    return order[:3]
-
-
-def _check_hit(bet, actual_top3: list[int], amount: int) -> tuple[bool, int]:
-    """的中判定と払戻計算。"""
-    combo = [int(x) for x in bet["combination"].split("-")]
-    bet_type = bet["bet_type"]
-    if not actual_top3 or len(actual_top3) < 2:
-        return False, 0
-
-    if bet_type == "nirentan":
-        hit = len(combo) == 2 and combo[0] == actual_top3[0] and combo[1] == actual_top3[1]
-    elif bet_type == "nirenfuku":
-        hit = set(combo[:2]) == set(actual_top3[:2])
-    elif bet_type == "sanrentan":
-        hit = len(combo) == 3 and combo == actual_top3[:3]
-    elif bet_type == "sanrenfuku":
-        hit = set(combo) == set(actual_top3[:3])
-    else:
-        hit = False
-
-    if hit:
-        payout = int(amount * float(bet["odds"]))
-        return True, payout
-    return False, 0
-
-
-def _pass_record(race_df: pd.DataFrame, bet) -> dict:
+def _pass_record(race_id, race_date, stadium_code, bet) -> dict:
     return {
-        "race_id": race_df["race_id"].iloc[0] if "race_id" in race_df else None,
-        "race_date": race_df["race_date"].iloc[0],
-        "stadium_code": race_df["stadium_code"].iloc[0],
+        "race_id": race_id,
+        "race_date": race_date,
+        "stadium_code": stadium_code,
         "bet_type": "", "combination": "",
         "model_prob": None, "odds": None, "expected_value": None,
         "amount": 0, "is_hit": None, "payout": 0,
-        "bankroll": None, "is_pass": True, "pass_reason": bet.get("pass_reason", ""),
+        "bankroll": None, "is_pass": True,
+        "pass_reason": bet.get("pass_reason", "") if hasattr(bet, "get") else "",
     }
 
 

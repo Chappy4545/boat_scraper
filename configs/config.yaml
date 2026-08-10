@@ -42,59 +42,21 @@ betting:
   min_model_confidence: 0.20
   min_odds: 1.5
   max_odds: 50.0
+  # 2026-08-10: 未見データ3期間(5月/6月/7-8月)の検証で 2連複のみ採用。
+  #   3連単・3連複は全ルールを試しても全期間黒字の条件が見つからなかったため停止。
+  #   (3連単 最良94.3% / 3連複は非単調でノイズ)
   bet_types:
     - "2連複"
-    - "3連複"
-    - "3連単"
   bet_type_overrides:
     nirenfuku:
-      calibration_factor: 0.18  # 2026-06-14: 新モデル 67件1的中(1.5%) を受けて 0.37→0.18 へ慎重に調整
-                                # (理論値は0.07だがサンプル小のため中間値を採用)
-      # 2026-07-11: PL 2日累計 (7/6+7/11, 316件) から帯別補正
-      # 明確なパターン: 5-15%予測帯を大幅過大評価、15-20%と30%+は正確
-      # シミュレーション: 316件-9,180 → 71件+1,150 (ROI=116%)
-      calibration_table_pl:
-        - raw_mp_max: 0.05
-          hit_rate: 0.030   # n=37 実hit=2.70%
-        - raw_mp_max: 0.10
-          hit_rate: 0.030   # n=84 実hit=2.38% (大幅過大)
-        - raw_mp_max: 0.15
-          hit_rate: 0.055   # n=63 実hit=4.76% (大幅過大)
-        - raw_mp_max: 0.20
-          hit_rate: 0.130   # n=44 実hit=13.64% (正確)
-        - raw_mp_max: 0.30
-          hit_rate: 0.100   # n=46 実hit=4.35% (ノイズ気味、smoothing)
-        - raw_mp_max: 1.00
-          hit_rate: 0.350   # n=42 実hit=35.71% (正確)
-    sanrenfuku:
-      calibration_factor: 0.10  # 2026-06-14: 新モデル 8件0的中 を受けて 0.16→0.10 (8件は小さすぎてゼロ化はしない)
-      min_ev: 1.5               # sanrenfukuは少し高めに設定
-      min_odds: 25.0            # 高オッズ特化を維持
-      max_model_prob: 0.05      # 2026-06-10: pred>5%帯はROI=0% (calibration不良) のため除外
-    sanrentan:
-      # 2026-07-05: 帯別実測補正テーブル (calibration_table) を導入
-      # 5日累計429件から集計: raw_mp 20-30%帯 hit=2.74%, 30-50%帯 hit=4.96%, 50%+帯 hit=10.53%
-      # 一律factorでは各帯で1.5-3倍の誤差 → 帯別補正
-      calibration_table:
-        - raw_mp_max: 0.30
-          hit_rate: 0.028   # n=73, hits=2 (実測 2.74%)
-        - raw_mp_max: 0.50
-          hit_rate: 0.050   # n=242, hits=12 (実測 4.96%)
-        - raw_mp_max: 1.00
-          hit_rate: 0.105   # n=114, hits=12 (実測 10.53%)
-      # 2026-07-06: PL out-of-sample (7/5, 123件) 実測から専用テーブル
-      # sanrentanは10%以上帯で 0/31 と壊滅 → 5-10%帯のみ狙う
-      calibration_table_pl:
-        - raw_mp_max: 0.05
-          hit_rate: 0.020   # n=2 (小サンプル、保守的)
-        - raw_mp_max: 0.10
-          hit_rate: 0.046   # n=87 hit=4.60% (実測)
-        - raw_mp_max: 0.15
-          hit_rate: 0.010   # n=20 hit=0% (壊滅、保守的)
-        - raw_mp_max: 1.00
-          hit_rate: 0.010   # 高帯は狙わない
-      calibration_factor: 0.14  # fallback (calibration_tableが優先)
-      max_odds: 25.0            # 大穴抑制を維持
+      # 選別ルール R5: model_prob >= 0.30 かつ EV >= 1.2
+      #   検証(odds実在レース, モデルは各期間より前のデータのみで訓練):
+      #     5月 ROI 130.1% / 6月 178.9% / 7-8月 114.6%  ← 全期間黒字はこの条件のみ
+      #     統合 1,101本 的中率30.9% ROI 147.1% (損益分岐比 +7.1SE)
+      #   p>=0.20 は統合144%だが7-8月96.6%と赤字のため不採用。
+      min_model_prob: 0.30
+      # max_model_prob は撤廃。50%以上の帯こそ最良(ROI 171-176%)であり、
+      # 旧設定 0.50 は勝てる領域を除外していた。
 
 money_management:
   initial_bankroll: 100000
