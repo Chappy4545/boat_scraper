@@ -10,12 +10,18 @@
   python main.py train [DATE_FROM] [DATE_TO]        # モデル学習
   python main.py predict [DATE]                     # 予測実行 → 自動でexport
   python main.py judge [DATE]                       # 的中判定 → 自動でexport更新
+  python main.py archive_odds [DATE]                # オッズをJSON退避（DB不要・クラウド用）
+  python main.py ingest_odds [DATE]                 # 退避JSONをDBに取り込む
   python main.py export [DATE]                      # 静的JSONをdocs/data/に出力
   python main.py backtest DATE_FROM DATE_TO         # バックテスト
 
 スケジュール:
   08:00  BoatRaceUpdate08  → python main.py update   (出走表+オッズ → 全レース予測)
   22:30  BoatRaceJudge     → daily_judge.bat          (結果収集 → 判定 → push)
+  23:40  GitHub Actions    → archive_odds            (オッズをJSON退避。PC停止時の保険)
+
+オッズは過去日に遡って取得できない（実測）。当日中ならレース終了後も取得可能。
+そのため PC の稼働に関係なく、その日のうちにクラウドで退避しておく。
 """
 import sys
 from datetime import date, timedelta
@@ -74,8 +80,20 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5,
         _catchup_missed_results(max_workers=max_workers)
 
 
-def _catchup_missed_results(lookback_days: int = 7, max_workers: int = 5):
-    """直近N日のうち結果が未収集の日をまとめて収集・判定する。"""
+def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
+    """直近N日のうち、データが欠けている日をまとめて収集・判定する。
+
+    対象は2種類:
+      1. レースはあるが結果が無い日（judge 前に落ちた等）
+      2. レース自体が1件も無い日（PC停止でその日を丸ごと取り逃した）
+
+    2 は以前は救えていなかった。旧実装は `race_cnt > 0` を条件にしており、
+    PC が止まった日はレースが0件なので永久に対象外だった
+    （2026-07-28〜31, 08-08〜09 が実際にこれで欠落した）。
+
+    なお、オッズは過去日に遡れないためここでは復元できない。
+    オッズの保全は GitHub Actions の odds_archive が担う。
+    """
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import get_engine, get_session
     from src.ingestion.saver import save_day
@@ -98,8 +116,8 @@ def _catchup_missed_results(lookback_days: int = 7, max_workers: int = 5):
                            WHERE r.race_date = :d"""),
                 {"d": str(d)}
             ).scalar()
-        # レースは存在するが結果がない日
-        if race_cnt > 0 and result_cnt == 0:
+        # レースは存在するが結果がない日 / レース自体を取り逃した日
+        if result_cnt == 0:
             targets.append(d)
 
     if not targets:
@@ -650,6 +668,125 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
         logger.error(f"git push 失敗（手動でpushしてください）: {e}")
 
 
+def cmd_archive_odds(target_date: date | None = None, max_workers: int = 3):
+    """当日のオッズを JSON に退避する（DB不要 / GitHub Actions 用）。
+
+    オッズは過去日には遡って取得できない（実測: 3週間前の日付は0件）。
+    一方、当日中であればレース終了後も取得できる（実測で確認済み）。
+    したがってローカルPCの稼働に関係なく、その日のうちにクラウドで
+    退避しておけば、ROI検証に使える資産を失わずに済む。
+
+    実行時刻は朝の update (08:00) に合わせること。買い目の判断は朝の
+    オッズで行っており、夜の確定オッズを混ぜると検証の前提が変わるため。
+
+    出力: docs/data/odds_raw_YYYY-MM-DD.json.gz (gzipで約1/17)
+    後で `python main.py ingest_odds DATE` で DB に取り込む。
+    """
+    import gzip
+    import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.scraping.official import BoatRaceScraper
+
+    config = load_config()
+    d = target_date or date.today()
+    out_path = Path("docs/data") / f"odds_raw_{d}.json.gz"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with BoatRaceScraper(config) as scraper:
+        try:
+            stadiums = scraper.get_holding_stadiums(d)
+        except Exception as e:
+            logger.error(f"開催場取得失敗: {e}")
+            return
+        if not stadiums:
+            logger.info(f"{d}: 開催なし")
+            return
+
+        def fetch_stadium(code: str) -> list[dict]:
+            rows: list[dict] = []
+            with BoatRaceScraper(config) as sc:
+                for race_no in range(1, 13):
+                    for getter in (sc.get_odds_nirenfuku, sc.get_odds_sanrentan,
+                                   sc.get_odds_sanrenfuku):
+                        try:
+                            df = getter(code, d, race_no)
+                        except Exception:
+                            continue
+                        if df is None or df.empty:
+                            continue
+                        for _, r in df.iterrows():
+                            rows.append({
+                                "stadium_code": str(r["stadium_code"]),
+                                "race_no": int(r["race_no"]),
+                                "bet_type": str(r["bet_type"]),
+                                "combination": str(r["combination"]),
+                                "odds": float(r["odds"]),
+                            })
+            return rows
+
+        all_rows: list[dict] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(fetch_stadium, c): c for c in stadiums}
+            for fut in as_completed(futures):
+                code = futures[fut]
+                try:
+                    got = fut.result()
+                    all_rows.extend(got)
+                    logger.info(f"  場{code}: {len(got)} 件")
+                except Exception as e:
+                    logger.warning(f"  場{code} 失敗: {e}")
+
+    payload = {"race_date": str(d), "count": len(all_rows), "odds": all_rows}
+    blob = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    out_path.write_bytes(gzip.compress(blob, 9))
+    logger.info(
+        f"オッズ退避完了: {out_path} ({len(all_rows)} 件, "
+        f"{out_path.stat().st_size/1e6:.2f} MB)"
+    )
+
+
+def cmd_ingest_odds(target_date: date | None = None):
+    """`archive_odds` が退避した JSON を DB に取り込む。
+
+    ローカルPCが止まっていた日のオッズを、後から DB に復元するために使う。
+    """
+    import gzip
+    import json
+    from pathlib import Path
+
+    import pandas as pd
+
+    from src.ingestion.database import init_db
+    from src.ingestion.saver import save_odds
+
+    config = load_config()
+    init_db(config)
+    d = target_date or date.today()
+    base = Path("docs/data")
+    gz_path, raw_path = base / f"odds_raw_{d}.json.gz", base / f"odds_raw_{d}.json"
+    if gz_path.exists():
+        payload = json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
+    elif raw_path.exists():  # 旧形式（非圧縮）
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    else:
+        logger.error(f"退避JSONなし: {gz_path}")
+        return
+
+    rows = payload.get("odds", [])
+    if not rows:
+        logger.info(f"{d}: 退避オッズ0件")
+        return
+
+    df = pd.DataFrame(rows)
+    df["race_date"] = pd.to_datetime(payload["race_date"]).date()
+    n = save_odds(df, is_final=True)
+    logger.info(f"オッズ取込完了: {d} {n} 件")
+
+
 def cmd_backtest(date_from: str, date_to: str):
     from src.backtest.runner import run_backtest
     from src.ingestion.database import init_db
@@ -712,6 +849,12 @@ def main():
     elif cmd == "judge":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge(d)
+    elif cmd == "archive_odds":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_archive_odds(d)
+    elif cmd == "ingest_odds":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_ingest_odds(d)
     elif cmd == "export":
         from src.export import export_day, export_performance
         from src.ingestion.database import init_db

@@ -1,0 +1,91 @@
+name: Odds Archive
+
+# オッズは過去日に遡って取得できない（実測: 3週間前の日付は0件）。
+# ローカルPCが停止していた日はオッズが永久に失われ、ROI検証に使える
+# 資産が減る（2026-07-20〜27 の8日・約1,272レース分が実際に失われた）。
+# そのため PC の稼働に関係なく、その日のうちにクラウドで退避しておく。
+#
+# 朝の update (08:00 JST) と同じ時間帯に取得する。買い目の判断は朝の
+# オッズで行っており、夜の確定オッズを混ぜると検証の前提が変わるため。
+#
+# ローカルの update が成功していれば bets_YYYY-MM-DD.json が push される。
+# その場合オッズは既にローカルDBにあるので退避はスキップし、
+# リポジトリを無駄に太らせない（コミットされるのは PC が落ちた日だけ）。
+#
+# 取り込みは後からローカルで:  python main.py ingest_odds YYYY-MM-DD
+
+on:
+  schedule:
+    # 毎日 08:45 JST (23:45 UTC 前日) — ローカル update(08:00) の完了後
+    - cron: '45 23 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYY-MM-DD, 省略=今日)'
+        required: false
+      force:
+        description: 'ローカル成功時もスキップせず退避する (1で有効)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: odds-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Decide whether to archive
+        id: decide
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          if [ -z "$DATE" ]; then
+            DATE=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          fi
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event.inputs.force }}" = "1" ]; then
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          elif [ -f "docs/data/bets_${DATE}.json" ]; then
+            echo "ローカルの update 成功済み ($DATE) — 退避をスキップ"
+            echo "run=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "ローカルの update が未実行 ($DATE) — オッズを退避する"
+            echo "run=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.decide.outputs.run == 'yes'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.decide.outputs.run == 'yes'
+        run: pip install -r requirements.txt
+
+      - name: Archive odds
+        if: steps.decide.outputs.run == 'yes'
+        run: python main.py archive_odds "${{ steps.decide.outputs.date }}"
+
+      - name: Commit archived odds
+        if: steps.decide.outputs.run == 'yes'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data/odds_raw_*.json.gz
+          if git diff --cached --quiet; then
+            echo "No odds to commit"
+          else
+            git commit -m "auto: archive odds ${{ steps.decide.outputs.date }} (PC停止日の保全)"
+            git pull --rebase -X ours origin master || git rebase --abort
+            git push
+          fi
