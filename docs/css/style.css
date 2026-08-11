@@ -933,3 +933,180 @@ body {
 .info-sched-desc {
   color: var(--text);
 }
+
+/* ════════════════════════════════
+   その日の状況パネル（2026-08-11 追加）
+   実運用開始により「今日いくら賭けて、いくら戻ったか」が最初に要るため。
+   ヒーロー数値は1画面に1つ / 状態は色だけでなく記号と語も添える。
+════════════════════════════════ */
+.day-panel {
+  position: relative;
+  background: linear-gradient(160deg, var(--surface) 0%, var(--bg2) 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem 1.1rem 1.1rem;
+  margin-bottom: .9rem;
+  overflow: hidden;
+}
+/* 左端の細い色帯で状態を示す（色だけに頼らず、下のラベルにも記号と語を出す） */
+.day-panel::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--accent-lt);
+}
+.day-panel--good::before { background: var(--green); }
+.day-panel--bad::before  { background: var(--red); }
+.day-panel--pending::before { background: var(--muted); }
+
+.day-panel__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .5rem; margin-bottom: .35rem;
+}
+.day-panel__title {
+  font-size: .82rem; font-weight: 600; color: var(--muted);
+  letter-spacing: .04em;
+}
+.chip {
+  font-size: .68rem; padding: 2px 8px; border-radius: 999px;
+  background: var(--surface2); color: var(--muted);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.chip--wait { color: var(--gold); border-color: rgba(255,213,79,.35); }
+
+/* ヒーロー数値: 1画面に1つ。大きな単独数値なので等幅数字は使わない */
+.day-hero { margin: .1rem 0 .8rem; }
+.day-hero__value {
+  font-size: 2.6rem; font-weight: 700; line-height: 1.05;
+  letter-spacing: -.02em; color: var(--text);
+}
+.day-hero__value.is-good { color: var(--green); }
+.day-hero__value.is-bad  { color: var(--red); }
+.day-hero__label {
+  font-size: .74rem; color: var(--muted); margin-top: .2rem;
+}
+
+/* 数値の並び。列で揃えるので等幅数字を使う */
+.stat-row {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: .5rem; font-variant-numeric: tabular-nums;
+}
+.day-panel--pending .stat-row { grid-template-columns: repeat(3, 1fr); }
+.stat {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 9px; padding: .5rem .4rem; text-align: center;
+}
+.stat__val { font-size: 1.02rem; font-weight: 600; color: var(--text); }
+.stat__sub { font-size: .72rem; color: var(--muted); font-weight: 400; }
+.stat__lab { font-size: .66rem; color: var(--muted); margin-top: .15rem; }
+
+.refresh-note {
+  font-size: .72rem; color: var(--muted); padding: 2px 0 8px;
+}
+
+@media (min-width: 768px) {
+  .day-hero__value { font-size: 3rem; }
+  .stat__val { font-size: 1.15rem; }
+}
+
+/* ════════════════════════════════
+   仕上げ（2026-08-11）
+   数値を主役にし、枠線や装飾は退かせる。
+════════════════════════════════ */
+
+/* カード: 平坦だったので、奥行きと余白の階層を作る */
+.bet-card {
+  background: linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,0));
+  background-color: var(--surface);
+  box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  transition: transform .12s ease, border-color .15s, background-color .15s, box-shadow .15s;
+}
+.bet-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0,0,0,.35);
+}
+.bet-card:active { transform: translateY(0); }
+
+/* 買い目の主役は「確率 → オッズ → 金額」。文字サイズで序列をつける */
+.bet-card__foot { margin-top: .55rem; align-items: baseline; }
+.bet-card__amount {
+  color: var(--text);
+  background: rgba(102,187,106,.12);
+  border: 1px solid rgba(102,187,106,.28);
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: .76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 艇番: 円形バッジの視認性を上げる */
+.bn { box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+
+/* 区切り見出し: 罫線を引くのではなく、小さなラベルとして置く */
+.ev-tier-divider {
+  border-bottom: none;
+  padding: .9rem 0 .35rem;
+  display: flex; align-items: center; gap: .5rem;
+  opacity: 1;
+  font-size: .68rem;
+  color: var(--muted);
+}
+.ev-tier-divider::after {
+  content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
+}
+
+/* 絞り込み結果バー: 控えめに */
+.bets-summary {
+  gap: .9rem;
+  font-size: .76rem;
+  padding: .35rem .7rem;
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+/* ヘッダー: すりガラスにして、スクロール時に内容と混ざらないようにする */
+.app-header {
+  backdrop-filter: blur(10px);
+  background-color: rgba(10,22,40,.82);
+}
+
+/* フィルターチップ: 押せることが分かる形に */
+.filter-chip { transition: background .15s, border-color .15s, color .15s; }
+.filter-chip:hover { border-color: var(--accent-lt); }
+
+/* 下部ナビ: 現在地をもっとはっきり */
+.bnav-btn.active { position: relative; }
+.bnav-btn.active::before {
+  content: ""; position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%);
+  width: 24px; height: 2px; border-radius: 0 0 2px 2px;
+  background: var(--accent-lt);
+}
+
+/* 空表示: そっけなさを減らす */
+.empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: rgba(255,255,255,.02);
+}
+
+/* 数字が並ぶ箇所は等幅に揃える */
+.bets-summary, .bet-card__foot, .yesterday-hit-payout { font-variant-numeric: tabular-nums; }
+
+/* 広い画面では買い目を2列に。1列だと右半分が空いていた。
+   区切り見出しは行をまたぐので全幅に。 */
+@media (min-width: 1100px) {
+  #bet-list.card-list,
+  #race-list.card-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .6rem .7rem;
+    align-items: start;
+  }
+  #bet-list .ev-tier-divider { grid-column: 1 / -1; }
+}
+@media (min-width: 1600px) {
+  #bet-list.card-list,
+  #race-list.card-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

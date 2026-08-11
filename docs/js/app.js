@@ -50,10 +50,15 @@ function showToast(msg, ms = 2500) {
 }
 
 // ── EV カラー ──
+// 実測(未見データ2期間)の EV帯別 回収率に合わせた段階。
+//   1.2〜1.5 → 100〜120% / 1.5〜2.0 → 126〜138% / 2.0〜3.0 → 142〜174% / 3.0〜 → 239〜280%
+// 旧実装は 1.5 以上を最上位にしていたため、ほぼ全ての買い目が最も派手な色になり
+// 「全部目立つ＝何も目立たない」状態だった。本当に良いものだけを目立たせる。
 function evColor(ev) {
-  if (ev >= 1.5) return "#ff7043";   // 高EV：オレンジ
-  if (ev >= 1.3) return "#ffd54f";   // 中高EV：ゴールド
-  return "#90caf9";                   // 標準EV：水色
+  if (ev >= 3.0) return "#ff7043";   // 実測で飛び抜けて良い帯
+  if (ev >= 2.0) return "#ffb74d";
+  if (ev >= 1.5) return "#ffd54f";
+  return "#90a4ae";                   // 標準帯は退かせる（muted）
 }
 
 // ── バッジ生成 ──
@@ -205,6 +210,7 @@ async function loadBets() {
       refreshEl.textContent = "";
     }
 
+    renderDayPanel(state.date, bets);
     renderYesterdayResult(yDate, yBets);
 
     if (!bets.length) {
@@ -218,11 +224,88 @@ async function loadBets() {
   } catch (e) {
     document.getElementById("bets-filter-area").innerHTML = "";
     document.getElementById("bets-summary").innerHTML = "";
+    document.getElementById("day-panel").innerHTML = "";
     document.getElementById("yesterday-result").innerHTML = "";
     container.innerHTML = e.message === "404"
       ? '<div class="empty">この日のデータがありません</div>'
       : `<div class="empty">取得失敗 (${e.message})</div>`;
   }
+}
+
+// ── その日の状況パネル ──
+// 実運用を始めた以上「今日いくら賭けて、いくら戻ったか」が最初に要る。
+// 数値の形は stat tile の作法に合わせる:
+//   ヒーロー数値は1画面に1つ(=損益) / 差分は符号つき / 状態は色だけに頼らず記号と語を添える
+function renderDayPanel(dateStr, bets) {
+  const el = document.getElementById("day-panel");
+  if (!bets || !bets.length) { el.innerHTML = ""; return; }
+
+  const settled  = bets.filter(b => b.is_hit === true || b.is_hit === false);
+  const pending  = bets.length - settled.length;
+  const hits     = settled.filter(b => b.is_hit === true);
+  const invested = bets.reduce((s, b) => s + (b.recommended_amount || 0), 0);
+  const settledInv = settled.reduce((s, b) => s + (b.recommended_amount || 0), 0);
+  const returned = hits.reduce((s, b) => s + (b.actual_payout || 0), 0);
+  const profit   = returned - settledInv;
+  const roi      = settledInv > 0 ? returned / settledInv : null;
+  const hitRate  = settled.length ? hits.length / settled.length : null;
+
+  const yen = n => "¥" + Math.round(n).toLocaleString();
+  const isToday = dateStr === todayStr();
+
+  // 結果がまだ無い（＝これから）
+  if (!settled.length) {
+    el.innerHTML = `
+      <section class="day-panel day-panel--pending">
+        <div class="day-panel__head">
+          <span class="day-panel__title">${isToday ? "今日" : fmtDate(dateStr)}の予定</span>
+          <span class="chip chip--wait">結果待ち</span>
+        </div>
+        <div class="day-hero">
+          <div class="day-hero__value">${yen(invested)}</div>
+          <div class="day-hero__label">投資予定額</div>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><div class="stat__val">${bets.length}</div><div class="stat__lab">買い目</div></div>
+          <div class="stat"><div class="stat__val">${new Set(bets.map(b => b.race_id)).size}</div><div class="stat__lab">レース</div></div>
+          <div class="stat"><div class="stat__val">${new Set(bets.map(b => b.stadium_name)).size}</div><div class="stat__lab">開催場</div></div>
+        </div>
+      </section>`;
+    return;
+  }
+
+  const good = profit >= 0;
+  el.innerHTML = `
+    <section class="day-panel ${good ? "day-panel--good" : "day-panel--bad"}">
+      <div class="day-panel__head">
+        <span class="day-panel__title">${isToday ? "今日" : fmtDate(dateStr)}の結果</span>
+        ${pending ? `<span class="chip chip--wait">未確定 ${pending}件</span>` : `<span class="chip">確定</span>`}
+      </div>
+      <div class="day-hero">
+        <div class="day-hero__value ${good ? "is-good" : "is-bad"}">
+          ${good ? "+" : "−"}${yen(Math.abs(profit))}
+        </div>
+        <div class="day-hero__label">${good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat">
+          <div class="stat__val">${roi === null ? "—" : (roi * 100).toFixed(0) + "%"}</div>
+          <div class="stat__lab">回収率</div>
+        </div>
+        <div class="stat">
+          <div class="stat__val">${hits.length}<span class="stat__sub">/${settled.length}</span></div>
+          <div class="stat__lab">的中</div>
+        </div>
+        <div class="stat">
+          <div class="stat__val">${hitRate === null ? "—" : (hitRate * 100).toFixed(0) + "%"}</div>
+          <div class="stat__lab">的中率</div>
+        </div>
+        <div class="stat">
+          <div class="stat__val">${yen(settledInv)}</div>
+          <div class="stat__lab">投資</div>
+        </div>
+      </div>
+    </section>`;
 }
 
 function renderYesterdayResult(yDate, bets) {
@@ -295,9 +378,10 @@ const EV_EXPLAIN_HTML = `
   </div>
   <p class="ev-info-desc">モデルが「当たりやすい」と判断した組み合わせのオッズが高いほどEVが上がります。EV&gt;1.0で期待値プラス、このシステムはEV≥1.20のみ推奨します。</p>
   <div class="ev-info-tiers">
-    <span class="ev-tier" style="color:#90caf9">1.20〜1.29　標準</span>
-    <span class="ev-tier" style="color:#ffd54f">1.30〜1.49　高EV</span>
-    <span class="ev-tier" style="color:#ff7043">1.50〜　　　超高EV</span>
+    <span class="ev-tier" style="color:#90a4ae">1.2〜1.5　実測 100〜120%</span>
+    <span class="ev-tier" style="color:#ffd54f">1.5〜2.0　実測 126〜138%</span>
+    <span class="ev-tier" style="color:#ffb74d">2.0〜3.0　実測 142〜174%</span>
+    <span class="ev-tier" style="color:#ff7043">3.0〜　　 実測 239〜280%</span>
   </div>
 </div>`;
 
@@ -363,15 +447,14 @@ function renderBets() {
   }
 
   // ── サマリー ──
+  // 日次の合計は上の day-panel が持つため、ここは「絞り込みの結果」だけを出す。
+  // 同じ金額を2箇所に出すと、どちらを見ればよいか分からなくなる。
   const totalAmt = filtered.reduce((s, b) => s + (b.recommended_amount || 0), 0);
-  const maxEv = filtered.length ? Math.max(...filtered.map(b => b.expected_value || 0)) : 0;
-  const highCount = filtered.filter(b => (b.expected_value || 0) >= 1.3).length;
-  document.getElementById("bets-summary").innerHTML = filtered.length ? `
+  const isFiltered = filtered.length !== bets.length;
+  document.getElementById("bets-summary").innerHTML = isFiltered && filtered.length ? `
     <div class="bets-summary">
-      <span>推奨 <strong>${filtered.length}</strong> 件</span>
-      ${highCount > 0 ? `<span>高EV <strong style="color:#ffd54f">${highCount}</strong> 件</span>` : ""}
-      <span>合計 <strong>¥${totalAmt.toLocaleString()}</strong></span>
-      <span>最高EV <strong style="color:${evColor(maxEv)}">${maxEv.toFixed(2)}</strong></span>
+      <span>絞り込み <strong>${filtered.length}</strong>/${bets.length} 件</span>
+      <span>投資 <strong>¥${totalAmt.toLocaleString()}</strong></span>
     </div>` : "";
 
   // ── カード描画（EV順のときはティア区切りを挿入）──
@@ -386,8 +469,13 @@ function renderBets() {
   filtered.forEach((b, i) => {
     if (state.betsSort === "ev") {
       const ev = b.expected_value || 0;
-      const tier = ev >= 1.5 ? "超高EV（1.50+）" : ev >= 1.3 ? "高EV（1.30〜1.49）" : "標準（1.20〜1.29）";
-      const tierColor = ev >= 1.5 ? "#ff7043" : ev >= 1.3 ? "#ffd54f" : "#90caf9";
+      // 区切りは実測の回収率帯に対応させる（旧: 1.3/1.5 の2段階）
+      const tier =
+        ev >= 3.0 ? "EV 3.0以上　実測 回収率 239〜280%" :
+        ev >= 2.0 ? "EV 2.0〜3.0　実測 142〜174%" :
+        ev >= 1.5 ? "EV 1.5〜2.0　実測 126〜138%" :
+                    "EV 1.2〜1.5　実測 100〜120%";
+      const tierColor = evColor(ev);
       if (tier !== lastTier) {
         html += `<div class="ev-tier-divider" style="color:${tierColor}">${tier}</div>`;
         lastTier = tier;
