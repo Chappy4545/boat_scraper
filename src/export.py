@@ -130,6 +130,7 @@ def export_day(target_date: date) -> dict:
                 "is_hit": b.is_hit,
                 "actual_payout": b.actual_payout,
                 "result_order": order_map.get(b.race_id),
+                "is_final_pick": bool(b.is_final_pick),
             }
             for b, r, s in bets_raw
         ]

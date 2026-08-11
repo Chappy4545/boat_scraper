@@ -454,9 +454,13 @@ function renderBets() {
   // 確定済みと未確定を分ける。日中に開いたとき最初に知りたいのは
   // 「次に買うのはどれか」であり、終わったレースと混ざっていると探せない。
   const settledOf = b => b.is_hit === true || b.is_hit === false;
-  const upcoming = filtered.filter(b => !settledOf(b)).sort(bySort);
+  // 確定した買い目（締切間近で固定＝もう更新されない）を最上段に置く。
+  // 「今これを買えばよい」が一目で分かるようにするため。
+  const finalOf = b => !settledOf(b) && b.is_final_pick;
+  const finals   = filtered.filter(finalOf).sort(bySort);
+  const upcoming = filtered.filter(b => !settledOf(b) && !finalOf(b)).sort(bySort);
   const settled  = filtered.filter(settledOf).sort(bySort);
-  filtered = [...upcoming, ...settled];
+  filtered = [...finals, ...upcoming, ...settled];
 
   // ── サマリー ──
   // 日次の合計は上の day-panel が持つため、ここは「絞り込みの結果」だけを出す。
@@ -478,18 +482,19 @@ function renderBets() {
 
   let html = "";
   let lastTier = null;
-  let inSettled = null;
+  let section = null;
   filtered.forEach((b, i) => {
-    const isSettled = settledOf(b);
-    // 未確定 → 確定済み へ切り替わる場所に見出しを挟む
-    if (isSettled !== inSettled) {
-      if (isSettled) {
+    const sec = settledOf(b) ? "settled" : (finalOf(b) ? "final" : "upcoming");
+    if (sec !== section) {
+      if (sec === "final") {
+        html += `<div class="sec-divider sec-divider--final">買い目確定 <span class="sec-divider__n">${finals.length}件・締切間近</span></div>`;
+      } else if (sec === "upcoming" && (finals.length || settled.length)) {
+        html += `<div class="sec-divider sec-divider--live">これから <span class="sec-divider__n">${upcoming.length}件・オッズ次第で変わります</span></div>`;
+      } else if (sec === "settled") {
         const hitN = settled.filter(x => x.is_hit === true).length;
-        html += `<div class="sec-divider">確定 <span class="sec-divider__n">${settled.length}件・的中 ${hitN}</span></div>`;
-      } else if (settled.length) {
-        html += `<div class="sec-divider sec-divider--live">これから <span class="sec-divider__n">${upcoming.length}件</span></div>`;
+        html += `<div class="sec-divider">レース済 <span class="sec-divider__n">${settled.length}件・的中 ${hitN}</span></div>`;
       }
-      inSettled = isSettled;
+      section = sec;
       lastTier = null;   // 区切りをまたいだらEV帯の見出しを出し直す
     }
     if (state.betsSort === "ev") {
@@ -533,15 +538,21 @@ function buildBetCard(b) {
     ? b.race_type.replace("レディース/", "L/").replace("予選", "予").replace("準優勝戦", "準優").replace("優勝戦", "優")
     : "";
 
+  // 締切間近で固定された買い目。以後オッズが動いても更新されないので
+  // 「これを買えばよい」と判断できる。朝の買い目はあくまで目安。
+  const finalBadge = b.is_final_pick && b.is_hit == null
+    ? `<span class="pick-final">買い目確定</span>` : "";
+
   return `
-    <div class="bet-card ${hitCls}" style="cursor:pointer;border-left-color:${color}">
+    <div class="bet-card ${hitCls}${b.is_final_pick && b.is_hit == null ? " is-final" : ""}" style="cursor:pointer;border-left-color:${color}">
       <div class="bet-card__head">
         <div class="bet-card__race">
           ${gradeBadge(b.grade)}
           ${categoryBadges(b.race_type, b.is_night)}
           <span>${b.stadium_name} R${b.race_no}</span>
           ${raceTypeShort ? `<span class="race-type-label">${raceTypeShort}</span>` : ""}
-          ${b.closing_time ? `<span>⏱${b.closing_time}</span>` : ""}
+          ${b.closing_time ? `<span class="close-time">⏱${b.closing_time}</span>` : ""}
+          ${finalBadge}
         </div>
         <span class="bet-card__ev" style="color:${color}">EV ${ev.toFixed(2)}</span>
       </div>

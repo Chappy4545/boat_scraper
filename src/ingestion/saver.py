@@ -94,6 +94,10 @@ def save_racelist(df: pd.DataFrame) -> int:
                     race.distance = _safe_int(row["distance"])
                 if row.get("is_night") is not None:
                     race.is_night = bool(row["is_night"])
+                # 締切予定時刻（"HH:MM"）。買い目カードに発走の目安を出すため。
+                # 従来は列だけあって一度も保存されていなかった。
+                if row.get("closing_time"):
+                    race.closing_time = str(row["closing_time"])[:5]
 
                 entry = session.query(RaceEntry).filter_by(
                     race_id=race.id, boat_no=_safe_int(row["boat_no"])

@@ -310,6 +310,11 @@ class Bet(Base):
     recommended_amount = Column(Integer)                # 推奨賭け金(円)
     is_pass = Column(Boolean, default=False)            # 見送り
     pass_reason = Column(String(100))                   # 見送り理由
+    # 締切が近づいた時点で固定した「これを買えばよい」買い目か。
+    # 朝の買い目は目安にすぎず、オッズが動けば EV も変わる。日中ずっと
+    # 更新され続けると「いつ買えばいいのか」が分からないため、
+    # 締切前に一度確定させ、以後は更新しない。
+    is_final_pick = Column(Boolean, default=False)
     is_hit = Column(Boolean)                            # 的中（結果判明後）
     actual_payout = Column(Integer)                     # 実際の払戻
     created_at = Column(DateTime, default=datetime.utcnow)

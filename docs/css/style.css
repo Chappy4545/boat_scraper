@@ -1337,3 +1337,19 @@ body {
   background: rgba(102,187,106,.1);
 }
 .race-card__foot .badge-bets { margin-left: auto; }
+
+/* 買い目確定（締切間近で固定＝もう更新されない）。
+   朝の買い目は目安にすぎず、日中ずっと更新され続けると
+   「いつ買えばいいのか」が分からないため、確定分を明示して先頭に置く。 */
+.pick-final {
+  font-size: .62rem; font-weight: 700; letter-spacing: .02em;
+  color: #0a1628; background: var(--gold);
+  border-radius: 999px; padding: 1px 7px; white-space: nowrap;
+}
+.bet-card.is-final {
+  border-color: rgba(255,213,79,.45);
+  box-shadow: 0 0 0 1px rgba(255,213,79,.18), 0 2px 10px rgba(0,0,0,.3);
+}
+.sec-divider--final { color: var(--gold); }
+.sec-divider--final::after { background: linear-gradient(90deg, rgba(255,213,79,.5), transparent); }
+.close-time { font-variant-numeric: tabular-nums; }

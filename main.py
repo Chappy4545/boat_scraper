@@ -305,6 +305,17 @@ def cmd_predict(target_date: date | None = None):
     for rid, bets_df in per_race:
         try:
             with get_session() as session:
+                # 判定済みの結果を引き継ぐ。作り直しで消すと、終わったレースの
+                # 的中・外れが失われる（2026-08-11 に実際に発生し、判定済み10件が
+                # 消えた）。同じ買い目（賭式・組合せ）なら結果を持ち越す。
+                prev = {
+                    (b.bet_type, b.combination): (b.is_hit, b.actual_payout)
+                    for b in session.query(Bet).filter(
+                        Bet.race_id == rid,
+                        Bet.model_version == model_version,
+                        Bet.is_hit.isnot(None),
+                    ).all()
+                }
                 session.query(Bet).filter(
                     Bet.race_id == rid,
                     Bet.model_version == model_version,
@@ -315,9 +326,15 @@ def cmd_predict(target_date: date | None = None):
                     reason = str(row.get("pass_reason", ""))
                     if not is_pass and amount == 0:
                         is_pass, reason = True, "日次予算上限"
+                    hit, pay = prev.get(
+                        (str(row.get("bet_type", "")), str(row.get("combination", ""))),
+                        (None, None),
+                    )
                     session.add(Bet(
                         race_id=rid,
                         model_version=model_version,
+                        is_hit=hit,
+                        actual_payout=pay,
                         bet_type=str(row.get("bet_type", "")),
                         combination=str(row.get("combination", "")),
                         model_prob=float(row["model_prob"]) if pd.notna(row.get("model_prob")) else None,
@@ -452,32 +469,48 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                "3連単": "sanrentan", "3連複": "sanrenfuku"}
     allowed_types = {_bt_map.get(t, t) for t in cfg_bet.get("bet_types", [])}
 
-    # 決着済みベットはそのまま保持
-    settled_bets = [b for b in bets_existing if b.get("is_hit") is not None]
-    settled_race_ids = {b["race_id"] for b in settled_bets}
+    # 決着済み・確定済みの買い目はそのまま保持する。
+    # 朝の買い目は目安にすぎず、オッズが動けば EV も変わる。日中ずっと
+    # 更新され続けると「いつ買えばいいのか」が分からないため、締切が
+    # 近づいた時点で一度固定し、以後は触らない（= is_final_pick）。
+    keep_bets = [b for b in bets_existing
+                 if b.get("is_hit") is not None or b.get("is_final_pick")]
+    keep_race_ids = {b["race_id"] for b in keep_bets}
 
     # race_id → レースメタデータ
     race_meta = {r["id"]: r for r in races_data}
 
-    # upcoming races（締切が現在時刻より後）
+    # 締切まで何分あるかで、更新対象と「今回確定させる対象」を分ける
+    FINALIZE_BEFORE_MIN = 20      # 締切20分前を切ったら確定させる
     upcoming_race_ids: list[int] = []
+    finalize_race_ids: set[int] = set()
     for race in races_data:
-        if race["id"] in settled_race_ids:
+        rid = race["id"]
+        if rid in keep_race_ids:
             continue
         ct = race.get("closing_time")
-        if ct:
-            try:
-                closing_dt = datetime.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(
-                    tzinfo=JST
-                )
-                if closing_dt > now_jst:
-                    upcoming_race_ids.append(race["id"])
-            except Exception:
-                upcoming_race_ids.append(race["id"])
+        if not ct:
+            # 締切が分からないレースは従来どおり毎回更新する（確定はしない）
+            upcoming_race_ids.append(rid)
+            continue
+        try:
+            closing_dt = datetime.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+        except Exception:
+            upcoming_race_ids.append(rid)
+            continue
+        minutes_left = (closing_dt - now_jst).total_seconds() / 60
+        if minutes_left <= FINALIZE_BEFORE_MIN:
+            # 締切間近、または既に締切を過ぎたのに未確定のもの。
+            # 実行が飛んでも取りこぼさないよう、過ぎた分もここで確定させる。
+            upcoming_race_ids.append(rid)
+            finalize_race_ids.add(rid)
         else:
-            upcoming_race_ids.append(race["id"])
+            upcoming_race_ids.append(rid)
 
-    logger.info(f"refresh_odds: {d}  upcoming={len(upcoming_race_ids)}レース")
+    logger.info(
+        f"refresh_odds: {d}  更新対象={len(upcoming_race_ids)}レース "
+        f"（うち今回確定={len(finalize_race_ids)}）/ 保持={len(keep_bets)}件"
+    )
 
     # probs JSONをrace_idでインデックス化
     probs_by_race = {
@@ -586,14 +619,20 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                         "recommended_amount": fixed_amount,
                         "is_hit": None,
                         "actual_payout": None,
+                        # 締切間近で固定した「これを買えばよい」買い目
+                        "is_final_pick": race_id in finalize_race_ids,
                     })
             except Exception as e:
                 logger.warning(f"race_id={rid} オッズ更新失敗: {e}")
 
     new_bets.sort(key=lambda b: (b.get("race_no") or 0, -(b.get("expected_value") or 0)))
-    all_bets = settled_bets + new_bets
+    all_bets = keep_bets + new_bets
+    n_final = sum(1 for b in all_bets if b.get("is_final_pick"))
     bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
-    logger.info(f"refresh_odds完了: settled={len(settled_bets)}, upcoming={len(new_bets)}")
+    logger.info(
+        f"refresh_odds完了: 保持={len(keep_bets)}件 更新={len(new_bets)}件 "
+        f"（確定済み合計={n_final}件）"
+    )
 
     from src.export import export_meta
     export_meta(source="github_actions")

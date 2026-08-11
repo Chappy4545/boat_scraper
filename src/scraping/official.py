@@ -128,6 +128,28 @@ class BoatRaceScraper(BaseScraper):
                 return grade
         return None
 
+    def _closing_time_from_soup(self, soup, race_no: int) -> str | None:
+        """締切予定時刻を取得する（"HH:MM"）。
+
+        出走表ページ上部に「締切予定時刻」として全12レース分が並んでいる。
+        レース番号の並び（1R..12R）と時刻の並びが対応するので、
+        該当レースの位置の時刻を取る。
+
+        買い目カードに発走の目安を出すために使う（従来は未取得だった）。
+        """
+        try:
+            nav = soup.select_one(".table1, .contentsFrame1_inner")
+            text = (nav or soup).get_text(" ", strip=True)
+            idx = text.find("締切予定時刻")
+            if idx < 0:
+                return None
+            times = re.findall(r"\b(\d{1,2}:\d{2})\b", text[idx:idx + 400])
+            if len(times) >= race_no:
+                return times[race_no - 1]
+        except Exception:
+            pass
+        return None
+
     def _parse_race_header(self, soup) -> dict:
         """レースヘッダーからグレード・レース名・距離・レース種別を取得。"""
         grade = None
@@ -186,6 +208,7 @@ class BoatRaceScraper(BaseScraper):
         """
         soup = BeautifulSoup(html, "lxml")
         race_header = self._parse_race_header(soup)
+        race_header["closing_time"] = self._closing_time_from_soup(soup, race_no)
 
         tables = soup.find_all("table")
         # 出走表は table[1]（26〜27行）
@@ -288,6 +311,7 @@ class BoatRaceScraper(BaseScraper):
                     "title": race_header["title"],
                     "distance": race_header["distance"],
                     "is_night": race_header["is_night"],
+                    "closing_time": race_header.get("closing_time"),
                     "boat_no": boat_no,
                     "racer_no": racer_no,
                     "racer_name": racer_name,
