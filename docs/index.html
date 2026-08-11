@@ -2,7 +2,9 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- viewport-fit=cover: これが無いと env(safe-area-inset-*) が 0 になり、
+       ノッチ／ホームバーを避けられない -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0a1628" />
   <meta name="description" content="期待値ベースのボートレース予想システム" />
   <title>艇予想</title>

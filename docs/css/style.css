@@ -1110,3 +1110,127 @@ body {
   #bet-list.card-list,
   #race-list.card-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* ════════════════════════════════
+   スマホ最適化（2026-08-11）
+   主に使うのはスマホなので、実機で起きる問題を潰す。
+════════════════════════════════ */
+
+/* ノッチ・ホームバーを避ける。
+   これが無いと iPhone では下部ナビの下端がホームバーに重なり、
+   一番押しやすいはずの位置が押しづらくなる。 */
+.bottom-nav {
+  height: auto;
+  min-height: var(--bnav-h);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.app-content {
+  padding-bottom: calc(var(--bnav-h) + env(safe-area-inset-bottom, 0px) + 1rem);
+  /* 慣性スクロールと、端でページ全体が動くのを防ぐ */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+.app-header {
+  padding-top: env(safe-area-inset-top, 0px);
+  height: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+
+@media (max-width: 767px) {
+  /* 指で押す領域を確保する（44px 目安）。
+     日付の前後送りは片手で何度も押すので特に重要。 */
+  .icon-btn {
+    min-width: 44px; min-height: 44px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .bnav-btn { min-height: 52px; }
+  .filter-chip { min-height: 34px; padding-top: 0; padding-bottom: 0; }
+  .sort-btn, .ev-info-btn { min-height: 34px; }
+
+  /* タップ時の青いハイライトと、長押しの選択を抑える（アプリらしさ） */
+  .bnav-btn, .icon-btn, .filter-chip, .sort-btn, .bet-card, .race-card, .snav-btn {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none; user-select: none;
+  }
+  /* 押した感触を返す */
+  .bet-card:active, .race-card:active { background-color: var(--surface2); }
+
+  /* 1画面に入る買い目を増やす。カードが縦に間延びしていた */
+  .bet-card { padding: .65rem .8rem; }
+  .bet-card__head { margin-bottom: .3rem; }
+  .bet-card__foot { margin-top: .35rem; }
+  .card-list { gap: .5rem; }
+
+  /* 当日パネルを詰める。ここで画面を使い切ると買い目が見えない */
+  .day-panel { padding: .8rem .9rem .9rem; border-radius: 12px; }
+  .day-hero { margin: 0 0 .6rem; }
+  .day-hero__value { font-size: 2.15rem; }
+  .stat { padding: .42rem .3rem; }
+
+  /* 横スクロールする列は、端が切れていることを見せる */
+  .filter-bar {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    mask-image: linear-gradient(90deg, #000 88%, transparent 100%);
+  }
+  .filter-chip { scroll-snap-align: start; }
+}
+
+/* 端末の「視差を減らす」設定を尊重する */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  .bet-card:hover { transform: none; }
+}
+
+/* 買い目カードの数値まわり */
+.bet-card__stats b { color: var(--text); font-weight: 600; }
+.dot-sep { color: var(--border); margin: 0 .3rem; }
+.odds-mark {
+  display: inline-block; margin-left: .35rem;
+  font-size: .64rem; line-height: 1.5;
+  color: var(--muted);
+}
+.odds-mark--hot {
+  color: var(--gold);
+  background: rgba(255,213,79,.12);
+  border: 1px solid rgba(255,213,79,.3);
+  border-radius: 999px; padding: 0 6px;
+}
+
+/* 当日パネルの補足行（更新時刻）と、結果待ち時の1行サマリ */
+.day-panel__sub {
+  margin-top: .5rem; font-size: .68rem; color: var(--muted);
+}
+.inline-stats {
+  display: flex; gap: 1rem; font-size: .78rem; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.inline-stats b { color: var(--text); font-weight: 600; font-size: .92rem; }
+
+@media (max-width: 767px) {
+  /* 見出しは下部ナビの現在地表示と重複しているため省く。
+     測定では買い目1件目が 442px の位置にあり、画面の半分以上を
+     上部要素が占めていた。ここを削って表示件数を増やす。 */
+  #page-bets > .page-head { display: none; }
+  .refresh-note { display: none; }
+  .day-panel { margin-bottom: .7rem; }
+}
+
+@media (max-width: 767px) {
+  /* パネルをさらに一段圧縮する。ヒーロー数値の存在感は残しつつ、
+     ラベルと余白を詰めて 1件ぶんの高さを稼ぐ。 */
+  .day-panel { padding: .65rem .8rem .7rem; }
+  .day-panel__head { margin-bottom: .15rem; }
+  .day-hero { margin: 0 0 .45rem; }
+  .day-hero__value { font-size: 1.95rem; }
+  .day-hero__label { font-size: .7rem; margin-top: .1rem; }
+  .day-panel__sub { margin-top: .4rem; font-size: .65rem; }
+  .stat-row { gap: .4rem; }
+  .stat { padding: .35rem .25rem; }
+  .stat__val { font-size: .95rem; }
+  .stat__lab { font-size: .62rem; }
+  /* ツールバーとフィルタの行間も詰める */
+  .bets-toolbar { margin-bottom: .35rem; }
+  .filter-bar { margin-bottom: .45rem; }
+}

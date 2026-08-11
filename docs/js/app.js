@@ -200,17 +200,17 @@ async function loadBets() {
     state._betsCache = bets;
     state._racesCache = races;
 
-    const refreshEl = document.getElementById("odds-refresh-time");
+    // 更新時刻は独立行にせず day-panel の中へ（スマホの縦を1行ぶん節約）
+    let refreshText = "";
     if (meta && meta.last_refreshed) {
       const t = new Date(meta.last_refreshed);
       const hm = t.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
       const src = meta.source === "github_actions" ? "自動更新" : "手動更新";
-      refreshEl.textContent = `オッズ最終更新: ${hm} (${src})`;
-    } else {
-      refreshEl.textContent = "";
+      refreshText = `オッズ最終更新 ${hm}（${src}）`;
     }
+    document.getElementById("odds-refresh-time").textContent = "";
 
-    renderDayPanel(state.date, bets);
+    renderDayPanel(state.date, bets, refreshText);
     renderYesterdayResult(yDate, yBets);
 
     if (!bets.length) {
@@ -236,9 +236,11 @@ async function loadBets() {
 // 実運用を始めた以上「今日いくら賭けて、いくら戻ったか」が最初に要る。
 // 数値の形は stat tile の作法に合わせる:
 //   ヒーロー数値は1画面に1つ(=損益) / 差分は符号つき / 状態は色だけに頼らず記号と語を添える
-function renderDayPanel(dateStr, bets) {
+function renderDayPanel(dateStr, bets, refreshText = "") {
   const el = document.getElementById("day-panel");
   if (!bets || !bets.length) { el.innerHTML = ""; return; }
+  // 更新時刻は独立した行にすると縦を1行ぶん食うので、パネルの中に入れる
+  const sub = refreshText ? `<div class="day-panel__sub">${refreshText}</div>` : "";
 
   const settled  = bets.filter(b => b.is_hit === true || b.is_hit === false);
   const pending  = bets.length - settled.length;
@@ -265,11 +267,12 @@ function renderDayPanel(dateStr, bets) {
           <div class="day-hero__value">${yen(invested)}</div>
           <div class="day-hero__label">投資予定額</div>
         </div>
-        <div class="stat-row">
-          <div class="stat"><div class="stat__val">${bets.length}</div><div class="stat__lab">買い目</div></div>
-          <div class="stat"><div class="stat__val">${new Set(bets.map(b => b.race_id)).size}</div><div class="stat__lab">レース</div></div>
-          <div class="stat"><div class="stat__val">${new Set(bets.map(b => b.stadium_name)).size}</div><div class="stat__lab">開催場</div></div>
+        <div class="inline-stats">
+          <span><b>${bets.length}</b> 買い目</span>
+          <span><b>${new Set(bets.map(b => b.race_id)).size}</b> レース</span>
+          <span><b>${new Set(bets.map(b => b.stadium_name)).size}</b> 場</span>
         </div>
+        ${sub}
       </section>`;
     return;
   }
@@ -305,6 +308,7 @@ function renderDayPanel(dateStr, bets) {
           <div class="stat__lab">投資</div>
         </div>
       </div>
+      ${sub}
     </section>`;
 }
 
@@ -521,10 +525,26 @@ function buildBetCard(b) {
         <span class="bet-card__amount">¥${(b.recommended_amount||0).toLocaleString()}</span>
       </div>
       <div class="bet-card__foot">
-        <span>確率 ${((b.model_prob||0)*100).toFixed(1)}% / オッズ ${(b.odds||0).toFixed(1)}x</span>
+        <span class="bet-card__stats">
+          確率 <b>${((b.model_prob||0)*100).toFixed(1)}%</b>
+          <span class="dot-sep">·</span>
+          オッズ <b>${(b.odds||0).toFixed(1)}x</b>${oddsMark(b.odds)}
+        </span>
         ${hitLabel}
       </div>
     </div>`;
+}
+
+// 実測(未見データ2期間)で、オッズが高い帯ほど回収率が良い:
+//   1.5〜3倍 96〜136% / 3〜5倍 113〜124% / 5〜8倍 123〜150%
+//   8〜15倍 187〜272% / 15〜50倍 493%(5-6月, n=26)
+// カードを眺めるだけでは気づけない差なので、優位な帯に印をつける。
+// 高オッズは本数が少なく振れも大きいため、煽らず控えめな印にとどめる。
+function oddsMark(odds) {
+  const o = odds || 0;
+  if (o >= 8) return `<span class="odds-mark odds-mark--hot" title="実測でこの帯は回収率が高い（ただし本数は少なく振れも大きい）">妙味</span>`;
+  if (o >= 5) return `<span class="odds-mark" title="実測で回収率がやや高い帯">◦</span>`;
+  return "";
 }
 
 // ════════════════════════════════
