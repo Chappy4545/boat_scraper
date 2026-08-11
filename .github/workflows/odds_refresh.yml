@@ -44,17 +44,31 @@ jobs:
             python main.py refresh_odds
           fi
 
+      # 終了したレースの結果を日中のうちに反映する。
+      # 従来は 22:30 の judge まで結果が一切出ず、日中は「賭けた」だけの
+      # 状態が続いていた。払戻一覧を1回叩けば終了レースが分かるので、
+      # 確定した分だけ bets JSON に書き戻す（DB不要）。
+      - name: Judge finished races
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          if [ -n "$DATE" ]; then
+            python main.py judge_live "$DATE"
+          else
+            python main.py judge_live
+          fi
+
       - name: Commit and push if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -- docs/data/bets_*.json 2>/dev/null || true
-          git add docs/data/meta.json
+          # 以前は bets_*.json を checkout で破棄していたため、オッズ更新も
+          # 結果判定も PWA に反映されていなかった。両方とも commit する。
+          git add docs/data/bets_*.json docs/data/meta.json
           if git diff --cached --quiet; then
             echo "変更なし — スキップ"
           else
-            git commit -m "auto: refresh odds $(date -u '+%Y-%m-%d %H:%M UTC')"
-            if git pull --rebase origin master; then
+            git commit -m "auto: refresh odds + judge $(date -u '+%Y-%m-%d %H:%M UTC')"
+            if git pull --rebase -X ours origin master; then
               git push
             else
               git rebase --abort

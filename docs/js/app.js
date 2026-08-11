@@ -84,6 +84,15 @@ function categoryBadges(raceType, isNight) {
 function betTypeLabel(t) {
   return { sanrentan:"3連単", sanrenfuku:"3連複", nirentan:"2連単", nirenfuku:"2連複" }[t] ?? t;
 }
+
+// actual_payout は「100円あたりの払戻額」（オッズ3.6倍 → 360）。
+// 実際の払戻は 賭け金 × payout / 100。
+// 以前はこの値をそのまま金額として表示・集計しており、
+// 回収額が実際の 1/5 程度に見えていた（賭け金500円なら5倍の誤差）。
+function payoutOf(bet) {
+  if (!bet || bet.actual_payout == null) return 0;
+  return Math.round((bet.recommended_amount || 0) * bet.actual_payout / 100);
+}
 function bn(no) {
   return `<span class="bn bn-${no}">${no}</span>`;
 }
@@ -247,7 +256,7 @@ function renderDayPanel(dateStr, bets, refreshText = "") {
   const hits     = settled.filter(b => b.is_hit === true);
   const invested = bets.reduce((s, b) => s + (b.recommended_amount || 0), 0);
   const settledInv = settled.reduce((s, b) => s + (b.recommended_amount || 0), 0);
-  const returned = hits.reduce((s, b) => s + (b.actual_payout || 0), 0);
+  const returned = hits.reduce((s, b) => s + payoutOf(b), 0);
   const profit   = returned - settledInv;
   const roi      = settledInv > 0 ? returned / settledInv : null;
   const hitRate  = settled.length ? hits.length / settled.length : null;
@@ -319,7 +328,7 @@ function renderYesterdayResult(yDate, bets) {
 
   const hits     = settled.filter(b => b.is_hit === true);
   const invested = settled.reduce((s, b) => s + (b.recommended_amount || 0), 0);
-  const returned = hits.reduce((s, b) => s + (b.actual_payout || 0), 0);
+  const returned = hits.reduce((s, b) => s + payoutOf(b), 0);
   const roi      = invested > 0 ? returned / invested : 0;
   const profit   = returned - invested;   // 損益。回収額だけでは増減が分からない
   const roiCls   = roi >= 1 ? "val-good" : "val-bad";
@@ -334,7 +343,7 @@ function renderYesterdayResult(yDate, bets) {
           <span class="yesterday-hit-place">${b.stadium_name || ""} R${b.race_no}</span>
           <span class="yesterday-hit-type">${BET_LABEL[b.bet_type] || b.bet_type}</span>
           <span class="yesterday-hit-combo">${b.combination}</span>
-          <span class="yesterday-hit-payout">¥${(b.actual_payout || 0).toLocaleString()}</span>
+          <span class="yesterday-hit-payout">¥${payoutOf(b).toLocaleString()}</span>
         </div>`).join("")}
     </div>`;
 
@@ -500,7 +509,7 @@ function buildBetCard(b) {
   const color = evColor(ev);
   const hitCls = b.is_hit === true ? "settled-hit" : b.is_hit === false ? "settled-miss" : "";
   const hitLabel = b.is_hit === true
-    ? `<span style="color:var(--green)">✓ 的中 +¥${(b.actual_payout||0).toLocaleString()}</span>`
+    ? `<span style="color:var(--green)">✓ 的中 +¥${payoutOf(b).toLocaleString()}</span>`
     : b.is_hit === false ? `<span style="color:var(--red)">✗ 外れ</span>` : "";
   const raceTypeShort = b.race_type
     ? b.race_type.replace("レディース/", "L/").replace("予選", "予").replace("準優勝戦", "準優").replace("優勝戦", "優")

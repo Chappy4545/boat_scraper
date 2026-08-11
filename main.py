@@ -695,6 +695,98 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
         logger.error(f"git push 失敗（手動でpushしてください）: {e}")
 
 
+def cmd_judge_live(target_date: date | None = None, max_workers: int = 4):
+    """終了したレースの結果を日中に bets JSON へ反映する（DB不要 / クラウド用）。
+
+    従来は 22:30 の judge まで結果が一切出なかった。払戻一覧ページを1回叩けば
+    終了済みレースが分かるので、日中の更新ごとに確定分だけ判定して書き戻す。
+
+    DB は使わず docs/data/bets_YYYY-MM-DD.json を直接更新するため、
+    ローカルPCが動いていなくても GitHub Actions から実行できる。
+    夜の judge は DB を正として同じ JSON を再生成するので競合しない。
+    """
+    import json
+    from pathlib import Path
+
+    from src.scraping.official import BoatRaceScraper
+
+    config = load_config()
+    d = target_date or date.today()
+    bets_path = Path("docs/data") / f"bets_{d}.json"
+    if not bets_path.exists():
+        logger.error(f"bets JSONなし: {bets_path}")
+        return
+
+    bets = json.loads(bets_path.read_text(encoding="utf-8"))
+    pending = [b for b in bets if b.get("is_hit") is None]
+    if not pending:
+        logger.info(f"judge_live: {d} 未判定の買い目なし")
+        return
+
+    # 場名 → 場コード（bets JSON は場名しか持たないため config から逆引き）
+    name_to_code = {v: k for k, v in config.get("stadiums", {}).items()}
+    need = set()
+    for b in pending:
+        code = name_to_code.get(b.get("stadium_name"))
+        if code:
+            need.add((code, int(b["race_no"])))
+
+    with BoatRaceScraper(config) as scraper:
+        try:
+            html = scraper._fetch_raw(scraper._url("pay"), {"hd": d.strftime("%Y%m%d")})
+            finished = set(scraper.parse_pay_summary(html))
+        except Exception as e:
+            logger.error(f"払戻一覧の取得に失敗: {e}")
+            return
+
+    targets = sorted(need & finished)
+    logger.info(
+        f"judge_live: {d} 未判定{len(pending)}件 / 終了済み{len(finished)}レース "
+        f"→ 判定対象 {len(targets)}レース"
+    )
+    if not targets:
+        return
+
+    # (場コード, R) → {(bet_type, combination): payout}
+    payout_map: dict[tuple[str, int], dict[tuple[str, str], int]] = {}
+
+    def fetch(code: str, race_no: int):
+        with BoatRaceScraper(config) as s:
+            _, py = s.get_race_result_and_payouts(code, d, race_no)
+        m = {}
+        for _, row in py.iterrows():
+            m[(str(row["bet_type"]), str(row["combination"]))] = int(row["payout"])
+        return (code, race_no), m
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(fetch, c, r) for c, r in targets]
+        for fut in as_completed(futs):
+            try:
+                key, m = fut.result()
+                payout_map[key] = m
+            except Exception as e:
+                logger.warning(f"  結果取得失敗: {e}")
+
+    judged = hits = 0
+    for b in bets:
+        if b.get("is_hit") is not None:
+            continue
+        code = name_to_code.get(b.get("stadium_name"))
+        key = (code, int(b["race_no"]))
+        if key not in payout_map:
+            continue
+        pay = payout_map[key].get((str(b["bet_type"]), str(b["combination"])))
+        b["is_hit"] = pay is not None
+        b["actual_payout"] = pay
+        judged += 1
+        if pay is not None:
+            hits += 1
+
+    bets_path.write_text(json.dumps(bets, ensure_ascii=False), encoding="utf-8")
+    logger.info(f"judge_live 完了: {judged}件を判定（的中 {hits}件）→ {bets_path}")
+
+
 def cmd_archive_odds(target_date: date | None = None, max_workers: int = 3):
     """当日のオッズを JSON に退避する（DB不要 / GitHub Actions 用）。
 
@@ -876,6 +968,9 @@ def main():
     elif cmd == "judge":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge(d)
+    elif cmd == "judge_live":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_judge_live(d)
     elif cmd == "archive_odds":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_archive_odds(d)
