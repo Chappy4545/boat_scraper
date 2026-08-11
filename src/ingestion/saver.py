@@ -195,9 +195,19 @@ def save_weather(df: pd.DataFrame) -> int:
 
 
 def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
-    """オッズ → odds"""
+    """オッズ → odds
+
+    is_live（レース当日に取得した＝買う時点で見られた値か）を記録する。
+    検証で「知り得ない確定オッズ」を使ってしまう事故を防ぐための区別。
+
+    当日取得済みの値は、後日の遡及取得で上書きしない。
+    上書きすると「実際に買えた値」が失われ、バックテストが
+    レース後の確定値で買い目を選ぶことになる（2026-08-11 に発覚）。
+    """
     if df is None or df.empty:
         return 0
+    from datetime import date as _date
+    today = _date.today()
     count = 0
     with get_session() as session:
         for _, row in df.iterrows():
@@ -207,9 +217,13 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
                 if not combo or not bet_type:
                     continue
                 stadium = _get_or_create_stadium(session, str(row["stadium_code"]))
+                rd = row["race_date"]
                 race = _get_or_create_race(
-                    session, stadium, row["race_date"], _safe_int(row["race_no"])
+                    session, stadium, rd, _safe_int(row["race_no"])
                 )
+                rd_val = rd.date() if hasattr(rd, "date") else rd
+                is_live = (rd_val == today)
+
                 existing = session.query(Odds).filter_by(
                     race_id=race.id,
                     bet_type=bet_type,
@@ -217,7 +231,11 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
                     is_final=is_final,
                 ).first()
                 if existing:
+                    # 当日取得済みの値を後日の取得で壊さない
+                    if existing.is_live and not is_live:
+                        continue
                     existing.odds = _safe_float(row.get("odds"))
+                    existing.is_live = bool(existing.is_live or is_live)
                 else:
                     session.add(Odds(
                         race_id=race.id,
@@ -225,6 +243,7 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
                         combination=combo,
                         odds=_safe_float(row.get("odds")),
                         is_final=is_final,
+                        is_live=is_live,
                     ))
                 count += 1
             except Exception as e:

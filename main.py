@@ -716,6 +716,94 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
         logger.error(f"git push 失敗（手動でpushしてください）: {e}")
 
 
+def cmd_backfill_before_info(date_from: str, date_to: str,
+                             max_minutes: int = 55, max_workers: int = 4):
+    """直前情報（展示タイム等）を過去日に遡って取得する。
+
+    2026-05-21 に取得を止めていたが、実測でモデルの唯一の伸びしろだった
+    （展示タイムを足すと 2連複30%帯の的中率 +1.12pt、対数損失は市場を上回る）。
+    オッズと違い遡及取得できることを確認済み。
+
+    未取得の日だけを対象にし、時間上限で自動停止する（再実行で続きから）。
+    """
+    import time
+
+    from sqlalchemy import text as sa_text
+
+    from src.ingestion.database import init_db, get_engine
+    from src.ingestion.saver import save_before_info, save_weather
+    from src.scraping.official import BoatRaceScraper
+
+    config = load_config()
+    init_db(config)
+    engine = get_engine()
+
+    # 未取得の日と、その日の開催場を洗い出す
+    sql = """
+        SELECT rc.race_date, s.code, COUNT(*)
+        FROM races rc
+        JOIN stadiums s ON s.id = rc.stadium_id
+        LEFT JOIN before_info b ON b.race_id = rc.id
+        WHERE rc.race_date BETWEEN :d1 AND :d2 AND b.race_id IS NULL
+        GROUP BY rc.race_date, s.code
+        ORDER BY rc.race_date DESC, s.code
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(sa_text(sql), {"d1": date_from, "d2": date_to}).fetchall()
+    if not rows:
+        logger.info("直前情報の未取得データなし")
+        return
+
+    targets = [(str(r[0]), str(r[1]), int(r[2])) for r in rows]
+    total_races = sum(t[2] for t in targets)
+    logger.info(
+        f"直前情報バックフィル: {date_from}〜{date_to} "
+        f"未取得 {len(targets)} 場日 / {total_races} レース（上限{max_minutes}分）"
+    )
+
+    deadline = time.time() + max_minutes * 60
+    done_races = 0
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def fetch_stadium(d_str: str, code: str, n_races: int):
+        d = date.fromisoformat(d_str)
+        bis, wts = [], []
+        with BoatRaceScraper(config) as s:
+            for rno in range(1, n_races + 1):
+                try:
+                    bi, wt = s.get_before_info_and_weather(code, d, rno)
+                    if bi is not None and not bi.empty:
+                        bis.append(bi)
+                    if wt is not None and not wt.empty:
+                        wts.append(wt)
+                except Exception:
+                    continue
+        return bis, wts
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {}
+        for d_str, code, n in targets:
+            if time.time() > deadline:
+                break
+            futures[ex.submit(fetch_stadium, d_str, code, n)] = (d_str, code, n)
+        for fut in as_completed(futures):
+            d_str, code, n = futures[fut]
+            try:
+                bis, wts = fut.result()
+            except Exception as e:
+                logger.warning(f"  {d_str} 場{code} 失敗: {e}")
+                continue
+            import pandas as pd
+            if bis:
+                save_before_info(pd.concat(bis, ignore_index=True))
+            if wts:
+                save_weather(pd.concat(wts, ignore_index=True))
+            done_races += n
+            logger.info(f"  {d_str} 場{code}: {n}レース 保存（累計 {done_races}/{total_races}）")
+
+    logger.info(f"直前情報バックフィル終了: {done_races} レース分")
+
+
 def cmd_judge_live(target_date: date | None = None, max_workers: int = 4):
     """終了したレースの結果を日中に bets JSON へ反映する（DB不要 / クラウド用）。
 
@@ -1007,6 +1095,14 @@ def main():
     elif cmd == "judge_live":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge_live(d)
+    elif cmd == "backfill_before_info":
+        if len(args) < 3:
+            print("使い方: python main.py backfill_before_info DATE_FROM DATE_TO [MAX_MINUTES]")
+            return
+        cmd_backfill_before_info(
+            args[1], args[2],
+            max_minutes=int(args[3]) if len(args) > 3 else 55,
+        )
     elif cmd == "archive_odds":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_archive_odds(d)

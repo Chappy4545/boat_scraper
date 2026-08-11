@@ -219,6 +219,12 @@ class Odds(Base):
     combination = Column(String(20), nullable=False)    # "1-2-3" 形式
     odds = Column(Float)
     is_final = Column(Boolean, default=False)           # 確定オッズか
+    # レース当日に取得した値か（= 買う時点で実際に見られた値か）。
+    # 2026-08-11: 全レコードが is_final=1 で区別できず、レース後に遡及取得した
+    # 確定オッズを「買い目を選ぶ材料」として検証に使っていた。知り得ない値で
+    # 選べば成績は当然良く見える（7-8月の検証データは83%がこれだった）。
+    # 検証では必ず is_live=True のみを使うこと。
+    is_live = Column(Boolean, default=False)
     recorded_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
