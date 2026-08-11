@@ -1295,3 +1295,25 @@ body {
 .result-order { font-size: .72rem; color: var(--muted); display: inline-flex; align-items: center; gap: .25rem; }
 .bn-sm { width: 17px; height: 17px; line-height: 17px; font-size: .68rem; }
 .ord-sep { color: var(--border); font-size: .7rem; }
+
+/* 「これから」と「確定」の区切り。
+   日中に開いたとき最初に知りたいのは次に買うレースであり、
+   終わったレースと混ざっていると探せなかった。 */
+.sec-divider {
+  display: flex; align-items: center; gap: .5rem;
+  font-size: .74rem; font-weight: 600; color: var(--muted);
+  padding: 1rem 0 .4rem;
+}
+.sec-divider:first-child { padding-top: .2rem; }
+.sec-divider::after {
+  content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
+}
+.sec-divider__n { font-weight: 400; font-size: .68rem; opacity: .8; }
+.sec-divider--live { color: var(--accent-lt); }
+.sec-divider--live::after { background: linear-gradient(90deg, var(--accent), transparent); }
+
+/* 確定済みカードは役目を終えているので、少し退かせる */
+.bet-card.settled-hit, .bet-card.settled-miss { background-image: none; }
+.bet-card.settled-miss { opacity: .58; }
+#bet-list .sec-divider { grid-column: 1 / -1; }

@@ -445,15 +445,18 @@ function renderBets() {
   let filtered = f.stadium ? bets.filter(b => b.stadium_name === f.stadium) : bets;
 
   // ── ソート ──
-  if (state.betsSort === "ev") {
-    filtered = [...filtered].sort((a, b) => (b.expected_value || 0) - (a.expected_value || 0));
-  } else {
-    filtered = [...filtered].sort((a, b) => {
-      if (a.stadium_name !== b.stadium_name) return a.stadium_name.localeCompare(b.stadium_name, "ja");
-      if (a.race_no !== b.race_no) return a.race_no - b.race_no;
-      return (b.expected_value || 0) - (a.expected_value || 0);
-    });
-  }
+  const bySort = (a, b) => {
+    if (state.betsSort === "ev") return (b.expected_value || 0) - (a.expected_value || 0);
+    if (a.stadium_name !== b.stadium_name) return a.stadium_name.localeCompare(b.stadium_name, "ja");
+    if (a.race_no !== b.race_no) return a.race_no - b.race_no;
+    return (b.expected_value || 0) - (a.expected_value || 0);
+  };
+  // 確定済みと未確定を分ける。日中に開いたとき最初に知りたいのは
+  // 「次に買うのはどれか」であり、終わったレースと混ざっていると探せない。
+  const settledOf = b => b.is_hit === true || b.is_hit === false;
+  const upcoming = filtered.filter(b => !settledOf(b)).sort(bySort);
+  const settled  = filtered.filter(settledOf).sort(bySort);
+  filtered = [...upcoming, ...settled];
 
   // ── サマリー ──
   // 日次の合計は上の day-panel が持つため、ここは「絞り込みの結果」だけを出す。
@@ -475,7 +478,20 @@ function renderBets() {
 
   let html = "";
   let lastTier = null;
+  let inSettled = null;
   filtered.forEach((b, i) => {
+    const isSettled = settledOf(b);
+    // 未確定 → 確定済み へ切り替わる場所に見出しを挟む
+    if (isSettled !== inSettled) {
+      if (isSettled) {
+        const hitN = settled.filter(x => x.is_hit === true).length;
+        html += `<div class="sec-divider">確定 <span class="sec-divider__n">${settled.length}件・的中 ${hitN}</span></div>`;
+      } else if (settled.length) {
+        html += `<div class="sec-divider sec-divider--live">これから <span class="sec-divider__n">${upcoming.length}件</span></div>`;
+      }
+      inSettled = isSettled;
+      lastTier = null;   // 区切りをまたいだらEV帯の見出しを出し直す
+    }
     if (state.betsSort === "ev") {
       const ev = b.expected_value || 0;
       // 区切りは実測の回収率帯に対応させる（旧: 1.3/1.5 の2段階）
@@ -945,6 +961,7 @@ function loadSettings() {
 // ページロード
 // ════════════════════════════════
 function loadPage(page) {
+  _lastLoad = Date.now();   // 自動更新の起点。手動操作の直後は再取得しない
   if (page === "bets")     loadBets();
   if (page === "races")    loadRaces();
   if (page === "perf")     loadPerf();
@@ -1050,7 +1067,38 @@ function renderInfoPage() {
 }
 
 // ════════════════════════════════
+// 自動更新
+// ════════════════════════════════
+// クラウド側が日中1時間ごとにオッズ更新と結果判定を push している。
+// アプリは読み込み時に一度取るだけだったので、開いたままでは新しい結果が
+// 反映されなかった。当日を見ている間だけ定期的に取り直す。
+//   - 他の日を見ているときは更新しない（過去日は変わらない）
+//   - 画面が隠れている間は止める（無駄な通信と電池消費を避ける）
+//   - 復帰時は、最後の取得から間が空いていれば即座に取り直す
+const REFRESH_MS = 5 * 60 * 1000;
+let _lastLoad = Date.now();
+let _refreshTimer = null;
+
+function refreshIfStale(force = false) {
+  if (document.hidden) return;
+  if (state.date !== todayStr()) return;          // 当日以外は変化しない
+  if (!force && Date.now() - _lastLoad < REFRESH_MS) return;
+  _lastLoad = Date.now();
+  loadPage(state.page);
+}
+
+function startAutoRefresh() {
+  if (_refreshTimer) clearInterval(_refreshTimer);
+  _refreshTimer = setInterval(() => refreshIfStale(), 60 * 1000);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshIfStale();          // 戻ってきたら鮮度を確認
+});
+
+// ════════════════════════════════
 // 初期化
 // ════════════════════════════════
 updateDateLabel();
 loadBets();
+startAutoRefresh();
