@@ -336,16 +336,11 @@ function renderYesterdayResult(yDate, bets) {
 
   const BET_LABEL = { sanrentan:"3連単", sanrenfuku:"3連複", nirentan:"2連単", nirenfuku:"2連複" };
 
-  const hitsHtml = hits.length === 0 ? "" : `
-    <div class="yesterday-hits">
-      ${hits.map(b => `
-        <div class="yesterday-hit-row">
-          <span class="yesterday-hit-place">${b.stadium_name || ""} R${b.race_no}</span>
-          <span class="yesterday-hit-type">${BET_LABEL[b.bet_type] || b.bet_type}</span>
-          <span class="yesterday-hit-combo">${b.combination}</span>
-          <span class="yesterday-hit-payout">¥${payoutOf(b).toLocaleString()}</span>
-        </div>`).join("")}
-    </div>`;
+  // 的中一覧は出さない。8/10 は44件あり、買い目が画面外へ押し出されていた。
+  // 詳細はカードをタップしてその日へ移動すれば見られる。
+  // 的中一覧は買い目ページには出さない。8/10 は44件あり、買い目が画面外へ
+  // 押し出されていた。日付をタップしてその日へ移動すれば全件見られる。
+  const hitsHtml = "";
 
   el.innerHTML = `
     <div class="yesterday-card" id="yesterday-card-click">
@@ -508,9 +503,16 @@ function buildBetCard(b) {
   const ev = b.expected_value ?? 0;
   const color = evColor(ev);
   const hitCls = b.is_hit === true ? "settled-hit" : b.is_hit === false ? "settled-miss" : "";
+  // 結果が出たレースは着順も出す。当たり外れだけでは「何着だったか」が分からず、
+  // 惜しかったのか全く違ったのかが判断できない。
+  const order = Array.isArray(b.result_order) ? b.result_order.slice(0, 3) : null;
+  const orderHtml = order && order.length
+    ? `<span class="result-order">結果 ${order.map((n, i) =>
+        `<span class="bn bn-${n} bn-sm">${n}</span>`).join('<span class="ord-sep">›</span>')}</span>`
+    : "";
   const hitLabel = b.is_hit === true
-    ? `<span style="color:var(--green)">✓ 的中 +¥${payoutOf(b).toLocaleString()}</span>`
-    : b.is_hit === false ? `<span style="color:var(--red)">✗ 外れ</span>` : "";
+    ? `<span class="val-good">✓ 的中 +¥${payoutOf(b).toLocaleString()}</span>`
+    : b.is_hit === false ? `<span class="val-bad">✗ 外れ</span>` : "";
   const raceTypeShort = b.race_type
     ? b.race_type.replace("レディース/", "L/").replace("予選", "予").replace("準優勝戦", "準優").replace("優勝戦", "優")
     : "";
@@ -542,6 +544,7 @@ function buildBetCard(b) {
         </span>
         ${hitLabel}
       </div>
+      ${orderHtml ? `<div class="bet-card__result">${orderHtml}</div>` : ""}
     </div>`;
 }
 

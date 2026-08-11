@@ -1284,3 +1284,14 @@ body {
   font-variant-numeric: tabular-nums;
 }
 #page-perf .info-heading { margin-top: 1.1rem; }
+
+/* 買い目カードの着順表示（結果が出たレースのみ）。
+   当たり外れだけでは「何着だったか」が分からず、惜しかったのか
+   全く違ったのかを判断できないため。 */
+.bet-card__result {
+  margin-top: .35rem; padding-top: .35rem;
+  border-top: 1px solid rgba(30,58,110,.5);
+}
+.result-order { font-size: .72rem; color: var(--muted); display: inline-flex; align-items: center; gap: .25rem; }
+.bn-sm { width: 17px; height: 17px; line-height: 17px; font-size: .68rem; }
+.ord-sep { color: var(--border); font-size: .7rem; }

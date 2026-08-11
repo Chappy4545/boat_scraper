@@ -6,7 +6,9 @@ from datetime import date
 from pathlib import Path
 
 from src.ingestion.database import get_session, get_engine
-from src.ingestion.models import Race, RaceEntry, Prediction, Bet, Stadium, BacktestResult
+from src.ingestion.models import (
+    Race, RaceEntry, Prediction, Bet, Stadium, BacktestResult, RaceResult,
+)
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,6 +94,21 @@ def export_day(target_date: date) -> dict:
             .order_by(Race.race_no, Bet.expected_value.desc())
             .all()
         )
+
+        # 着順（1着から順の艇番）。買い目カードに「何着だったか」を出すため。
+        # judge_live も同じキー result_order で書き込む。
+        order_map: dict[int, list[int]] = {}
+        if bets_raw:
+            rid_list = list({b.race_id for b, _, _ in bets_raw})
+            rows = (
+                session.query(RaceResult.race_id, RaceResult.arrival_order, RaceResult.boat_no)
+                .filter(RaceResult.race_id.in_(rid_list))
+                .order_by(RaceResult.race_id, RaceResult.arrival_order)
+                .all()
+            )
+            for rid, _order, boat in rows:
+                if boat is not None:
+                    order_map.setdefault(rid, []).append(int(boat))
         bets_json = [
             {
                 "bet_id": b.id,
@@ -110,6 +127,7 @@ def export_day(target_date: date) -> dict:
                 "recommended_amount": b.recommended_amount,
                 "is_hit": b.is_hit,
                 "actual_payout": b.actual_payout,
+                "result_order": order_map.get(b.race_id),
             }
             for b, r, s in bets_raw
         ]

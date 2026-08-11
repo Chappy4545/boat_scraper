@@ -718,9 +718,12 @@ def cmd_judge_live(target_date: date | None = None, max_workers: int = 4):
         return
 
     bets = json.loads(bets_path.read_text(encoding="utf-8"))
-    pending = [b for b in bets if b.get("is_hit") is None]
+    # 未判定のものに加え、判定済みでも着順が入っていないものを対象にする
+    # （着順は後から追加した項目なので、既存データには入っていない）
+    pending = [b for b in bets
+               if b.get("is_hit") is None or not b.get("result_order")]
     if not pending:
-        logger.info(f"judge_live: {d} 未判定の買い目なし")
+        logger.info(f"judge_live: {d} 反映すべき結果なし")
         return
 
     # 場名 → 場コード（bets JSON は場名しか持たないため config から逆引き）
@@ -747,35 +750,47 @@ def cmd_judge_live(target_date: date | None = None, max_workers: int = 4):
     if not targets:
         return
 
-    # (場コード, R) → {(bet_type, combination): payout}
+    # (場コード, R) → ({(bet_type, combination): payout}, 着順リスト)
     payout_map: dict[tuple[str, int], dict[tuple[str, str], int]] = {}
+    order_map: dict[tuple[str, int], list[int]] = {}
 
     def fetch(code: str, race_no: int):
         with BoatRaceScraper(config) as s:
-            _, py = s.get_race_result_and_payouts(code, d, race_no)
+            rr, py = s.get_race_result_and_payouts(code, d, race_no)
         m = {}
         for _, row in py.iterrows():
             m[(str(row["bet_type"]), str(row["combination"]))] = int(row["payout"])
-        return (code, race_no), m
+        # 着順（1着から順に艇番）。何着だったかを買い目カードに出すため
+        order = []
+        try:
+            for _, row in rr.sort_values("arrival_order").iterrows():
+                if row.get("arrival_order") is not None and str(row["boat_no"]).isdigit():
+                    order.append(int(row["boat_no"]))
+        except Exception:
+            pass
+        return (code, race_no), m, order
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = [ex.submit(fetch, c, r) for c, r in targets]
         for fut in as_completed(futs):
             try:
-                key, m = fut.result()
+                key, m, order = fut.result()
                 payout_map[key] = m
+                order_map[key] = order
             except Exception as e:
                 logger.warning(f"  結果取得失敗: {e}")
 
     judged = hits = 0
     for b in bets:
-        if b.get("is_hit") is not None:
-            continue
         code = name_to_code.get(b.get("stadium_name"))
         key = (code, int(b["race_no"]))
         if key not in payout_map:
             continue
+        if order_map.get(key):
+            b["result_order"] = order_map[key]   # 例: [2, 5, 6, 1, 4, 3]
+        if b.get("is_hit") is not None:
+            continue                              # 判定済みは着順だけ補う
         pay = payout_map[key].get((str(b["bet_type"]), str(b["combination"])))
         b["is_hit"] = pay is not None
         b["actual_payout"] = pay
