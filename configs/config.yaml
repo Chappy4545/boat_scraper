@@ -60,12 +60,24 @@ betting:
 
 money_management:
   initial_bankroll: 100000
-  strategy: "quarter_kelly"   # fixed | proportional | quarter_kelly
-  fixed_bet_amount: 200
-  max_bet_per_race: 2000
-  max_bet_per_day: 10000
-  max_drawdown_stop: 0.30    # 30% ドローダウンで停止
-  max_consecutive_losses_stop: 10
+  # 2026-08-11: quarter_kelly → fixed に変更。
+  #   R5(2連複 p>=0.30) を未見データで実測したところ、Kelly は1点あたり
+  #   上限2,000円に張り付き、24本/日で48,000円（資金の48%）に達していた。
+  #   Kelly は「1件ずつ順に賭ける」前提の式で、同日に多数を並列に賭けると
+  #   実効レバレッジが本数倍になる。定額の方が挙動が読め、実測も良好:
+  #     定額1,000円/本 → 5-6月 最終577,000円(DD16.4%) / 7-8月 140,000円(DD12.0%)
+  #     定額 500円/本 → 5-6月 最終338,500円(DD 8.3%) / 7-8月 120,000円(DD 7.0%)
+  #   まずは 500円/本で開始し、実績が想定と一致したら増やす。
+  strategy: "fixed"
+  fixed_bet_amount: 500
+  max_bet_per_race: 1000
+  max_bet_per_day: 15000     # 想定 13〜24本/日 × 500円 に対する安全弁
+  # 停止条件は実測に合わせた。R5 の実測では最長連敗 12〜14回、
+  # 最大DD 31.2% が「正常な範囲」で発生する（的中率31%なら10連敗の確率は2.5%、
+  # 1,100本なら8回以上起きる）。旧設定(連敗10 / DD30%)では正常な変動で
+  # 運用が止まってしまうため緩めた。
+  max_drawdown_stop: 0.45
+  max_consecutive_losses_stop: 25
 
 model:
   version: "v1"

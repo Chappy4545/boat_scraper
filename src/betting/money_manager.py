@@ -52,6 +52,15 @@ class BankrollState:
         else:
             self.consecutive_losses = 0
 
+    def reserve(self, invested: float) -> None:
+        """結果が出る前に投資枠だけ消費する（予測時の日次上限用）。
+
+        予測はレース前に行うため update_after_bet を呼べない。これを
+        呼ばないと day_invested が 0 のままで日次上限が一度も発動しない
+        （2026-08-11 に実際に発生し、上限1万円に対し48,000円が推奨されていた）。
+        """
+        self.day_invested += invested
+
     def reset_day(self) -> None:
         self.day_invested = 0.0
 

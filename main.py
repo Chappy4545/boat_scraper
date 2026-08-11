@@ -259,36 +259,62 @@ def cmd_predict(target_date: date | None = None):
     state = mm.new_state()
     bet_count = 0
 
+    # ── 1パス目: 全レースの買い目を出すだけ（賭け金はまだ決めない）
+    #    日次予算をレース順に消費すると、朝のレースで枠を使い切って
+    #    午後の良い買い目を取り逃す。2026-08-11 の実測では、その方式だと
+    #    7-8月が元本割れ(81,450円)した一方、予算配分を最適化すれば黒字だった。
+    per_race: list[tuple[int, pd.DataFrame]] = []
     for rid in race_ids:
         try:
-            # 確率予測 & 保存
             pred_df = predict_race(rid, model_version)
             if pred_df.empty:
                 continue
             save_predictions(rid, pred_df)
 
-            # オッズ取得
             odds_df = _load_odds(engine, rid)
-
-            # 買い目生成（EV計算）
             pl_probs = predict_race_pl(rid, temperature=pl_temperature) if use_ranker else None
             bets_df = generate_bets(pred_df, odds_df, config, model_version, pl_probs=pl_probs)
+            per_race.append((rid, bets_df))
+        except Exception as e:
+            logger.warning(f"  race_id={rid} 予測失敗: {e}")
 
-            # bets テーブルへ保存（既存削除→再挿入）
+    # ── 2パス目: 買い目を EV 降順に並べ、良いものから日次予算を割り当てる
+    candidates = []
+    for rid, bets_df in per_race:
+        for idx, row in bets_df.iterrows():
+            if not row.get("is_pass", True):
+                candidates.append((float(row.get("expected_value") or 0), rid, idx))
+    candidates.sort(key=lambda c: -c[0])
+
+    amounts: dict[tuple[int, object], int] = {}
+    for ev, rid, idx in candidates:
+        row = dict(next(b for r, b in per_race if r == rid).loc[idx])
+        amt = mm.calc_bet_amount(
+            float(row["expected_value"]), float(row["model_prob"]),
+            float(row["odds"]), state,
+        )
+        if amt > 0:
+            state.reserve(amt)      # 予算を消費（これが無いと日次上限が効かない）
+            amounts[(rid, idx)] = amt
+
+    skipped_budget = len(candidates) - len(amounts)
+    if skipped_budget:
+        logger.info(f"  日次予算({mm.max_per_day:,}円)超過のため {skipped_budget} 件を見送り")
+
+    # ── 保存
+    for rid, bets_df in per_race:
+        try:
             with get_session() as session:
                 session.query(Bet).filter(
                     Bet.race_id == rid,
                     Bet.model_version == model_version,
                 ).delete()
-                for _, row in bets_df.iterrows():
-                    amount = 0
-                    if not row.get("is_pass", True):
-                        amount = mm.calc_bet_amount(
-                            float(row["expected_value"]),
-                            float(row["model_prob"]),
-                            float(row["odds"]),
-                            state,
-                        )
+                for idx, row in bets_df.iterrows():
+                    is_pass = bool(row.get("is_pass", True))
+                    amount = amounts.get((rid, idx), 0)
+                    reason = str(row.get("pass_reason", ""))
+                    if not is_pass and amount == 0:
+                        is_pass, reason = True, "日次予算上限"
                     session.add(Bet(
                         race_id=rid,
                         model_version=model_version,
@@ -298,16 +324,17 @@ def cmd_predict(target_date: date | None = None):
                         odds=float(row["odds"]) if pd.notna(row.get("odds")) else None,
                         expected_value=float(row["expected_value"]) if pd.notna(row.get("expected_value")) else None,
                         recommended_amount=amount,
-                        is_pass=bool(row.get("is_pass", True)),
-                        pass_reason=str(row.get("pass_reason", ""))[:100],
+                        is_pass=is_pass,
+                        pass_reason=reason[:100],
                     ))
-                    if not row.get("is_pass", True):
+                    if not is_pass:
                         bet_count += 1
-
         except Exception as e:
-            logger.warning(f"  race_id={rid} 予測失敗: {e}")
+            logger.warning(f"  race_id={rid} 保存失敗: {e}")
 
-    logger.info(f"予測完了: 推奨買い目 {bet_count} 件")
+    logger.info(
+        f"予測完了: 推奨買い目 {bet_count} 件 / 投資額 {int(state.day_invested):,} 円"
+    )
 
     # 予測後に自動エクスポート
     from src.export import export_day, export_performance, export_probs, export_meta, export_pdca
