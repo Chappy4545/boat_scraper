@@ -299,6 +299,12 @@ class Bet(Base):
     bet_type = Column(String(20), nullable=False)       # sanrentan 等
     combination = Column(String(20), nullable=False)    # "1-2-3"
     model_prob = Column(Float)                          # モデル推定確率
+    # 市場の含意確率（1/オッズ を全組合せで正規化＝控除率を除いた市場の見立て）。
+    # モデル確率 ÷ market_prob が「市場とどれだけ食い違うか」= edge。
+    # 2026-08-11 の検証で、両期間とも利益は edge が大きい買い目に集中しており
+    # 市場も高く評価している買い目は一貫して負けていた（70%台）。
+    # 採用可否を後から検証できるよう、買う買わないに関わらず記録する。
+    market_prob = Column(Float)
     odds = Column(Float)                                # オッズ
     expected_value = Column(Float)                      # 期待値
     recommended_amount = Column(Integer)                # 推奨賭け金(円)

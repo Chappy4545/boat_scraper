@@ -67,17 +67,23 @@ def generate_bets(
 
     # 買い目候補の生成: PL経由 or 独立モデル合成経由
     candidates = []
-    bt_to_db_name = {"2連単": "nirentan", "2連複": "nirenfuku",
+    bt_to_db_name = {"単勝": "tansho", "2連単": "nirentan", "2連複": "nirenfuku",
                       "3連単": "sanrentan", "3連複": "sanrenfuku"}
+    # 記録だけしたい賭式（買わないが、後から検証できるよう残す）。
+    # 判定に必要な本数は 2連複だけだと3週間かかるが、賭式を増やせば
+    # 同じ日数で3倍のデータが貯まる。買うかどうかは is_pass で区別する。
+    paper_types = [bt_to_db_name.get(t, t) for t in cfg.get("paper_bet_types", [])]
+
     if pl_probs:
         # Plackett-Luce の確率をそのまま使う (calibration_factor不要)
-        for bet_type in bet_types:
-            db_name = bt_to_db_name.get(bet_type, bet_type)
+        wanted = [bt_to_db_name.get(t, t) for t in bet_types]
+        for db_name in list(dict.fromkeys(wanted + paper_types)):
             for combo in pl_probs.get(db_name, []):
                 candidates.append({
                     "bet_type": db_name,
                     "combination": combo["combination"],
                     "model_prob": max(0.0, min(1.0, float(combo["model_prob"]))),
+                    "_paper": db_name not in wanted,
                 })
     else:
         # 従来: win/top2/top3 独立モデルから joint 合成
@@ -113,6 +119,12 @@ def generate_bets(
 
     # オッズをマージ
     cands_df = _merge_odds(cands_df, odds_df)
+
+    # 市場の含意確率（賭式ごとに 1/オッズ を正規化＝控除率を除いた市場の見立て）。
+    # モデル確率 ÷ これ が edge。2026-08-11 の検証では、両期間とも利益は
+    # edge が大きい買い目に集中し、市場も高く評価している買い目は負けていた。
+    # 採用可否を実運用しながら検証するため、買う買わないに関わらず記録する。
+    cands_df["market_prob"] = _market_probs(cands_df)
 
     # 期待値計算
     cands_df["expected_value"] = cands_df["model_prob"] * cands_df["odds"]
@@ -164,6 +176,13 @@ def generate_bets(
             # model_prob が高い帯は実績の的中率が逆相関 (calibration不良) のため除外
             mask = active & (cands_df["model_prob"] > bt_max_mp)
             cands_df.loc[mask, ["is_pass", "pass_reason"]] = [True, f"model_prob>{bt_max_mp}/{bt}"]
+
+    # 記録専用の賭式は必ず見送りにする（検証用に数値だけ残す）
+    if "_paper" in cands_df.columns:
+        paper_mask = cands_df["_paper"].fillna(False).astype(bool)
+        cands_df.loc[paper_mask & ~cands_df["is_pass"], ["is_pass", "pass_reason"]] = \
+            [True, "記録のみ(ペーパー)"]
+        cands_df = cands_df.drop(columns=["_paper"])
 
     # 買い目を EV 降順でソート、上限本数まで
     buy = cands_df[~cands_df["is_pass"]].sort_values("expected_value", ascending=False)
@@ -249,6 +268,38 @@ def _apply_calibration_table(raw_mp: float, table: list) -> float:
             return float(entry.get("hit_rate", raw_mp))
     # 全帯を超えた場合は最後のエントリを適用
     return float(table[-1].get("hit_rate", raw_mp))
+
+
+def _market_probs(df: pd.DataFrame) -> pd.Series:
+    """賭式ごとに 1/オッズ を正規化して市場の含意確率を返す。
+
+    オッズには控除率（実測 25.8%）が乗っており 1/オッズ の総和は 1 を超える。
+    総和で割ることで控除率を取り除き、市場が「どの目が来ると思っているか」
+    だけを取り出す。全組合せのオッズが揃っていない賭式は NaN のままにする
+    （一部だけで正規化すると意味のない値になるため）。
+    """
+    out = pd.Series(np.nan, index=df.index, dtype=float)
+    n_expected = {"tansho": 6, "nirenfuku": 15, "nirentan": 30,
+                  "sanrenfuku": 20, "sanrentan": 120}
+    for bt, grp in df.groupby("bet_type"):
+        odds = pd.to_numeric(grp["odds"], errors="coerce")
+        valid = odds.notna() & (odds > 0)
+        need = n_expected.get(bt, 0)
+        if not need or valid.sum() == 0:
+            continue
+        inv = 1.0 / odds[valid]
+        total = inv.sum()
+        if total <= 0:
+            continue
+        if valid.sum() >= need:
+            # 全組合せ揃い: 総和で割れば控除率がきれいに落ちる
+            out.loc[inv.index] = inv / total
+        else:
+            # 一部欠け（朝は人気薄のオッズが取れないことがある）。
+            # 総和で割ると欠けた分だけ確率が水増しされるので、
+            # 控除率の実測値(25.8%)を使って絶対値のまま補正する。
+            out.loc[inv.index] = inv * (1 - 0.258)
+    return out
 
 
 def _merge_odds(df: pd.DataFrame, odds_df: pd.DataFrame) -> pd.DataFrame:

@@ -52,17 +52,20 @@ def collect(ranker_path, d1, d2):
     prm = {"d1": d1, "d2": d2, "bts": [BT]}
     with engine.connect() as conn:
         pay = conn.execute(text(
-            "SELECT p.race_id,p.combination FROM payouts p JOIN races r ON r.id=p.race_id "
+            "SELECT p.race_id,p.combination,p.payout FROM payouts p JOIN races r ON r.id=p.race_id "
             "WHERE r.race_date BETWEEN :d1 AND :d2 AND p.bet_type IN :bts"
         ).bindparams(bindparam("bts", expanding=True)), prm).fetchall()
         od = conn.execute(text(
+            # is_live=1 のみ: レース当日に取得した＝買う時点で実際に見えた値
             "SELECT o.race_id,o.combination,o.odds FROM odds o JOIN races r ON r.id=o.race_id "
-            "WHERE r.race_date BETWEEN :d1 AND :d2 AND o.is_final=1 AND o.bet_type IN :bts"
+            "WHERE r.race_date BETWEEN :d1 AND :d2 AND o.is_live=1 AND o.bet_type IN :bts"
         ).bindparams(bindparam("bts", expanding=True)), prm).fetchall()
 
+    # 回収は確定払戻（100円あたり）。odds×100 で計算すると速報値の誤差が乗る
+    payout = {(int(r[0]), str(r[1])): float(r[2]) for r in pay}
     hits = defaultdict(set)
-    for rid, cb in pay:
-        hits[int(rid)].add(str(cb))
+    for r in pay:
+        hits[int(r[0])].add(str(r[1]))
     odds = defaultdict(dict)
     for rid, cb, o in od:
         odds[int(rid)][str(cb)] = float(o)
@@ -84,7 +87,8 @@ def collect(ranker_path, d1, d2):
             if cb not in probs or not (MIN_ODDS <= o <= MAX_ODDS):
                 continue
             rows.append({"pm": probs[cb], "pk": inv[cb] / tot, "odds": o,
-                         "y": 1 if cb in won else 0})
+                         "y": 1 if cb in won else 0,
+                         "ret": payout.get((rid, cb), 0.0)})
     return pd.DataFrame(rows)
 
 
@@ -101,7 +105,7 @@ def show(R, title):
             if len(s) < MIN_N:
                 line += f"{'-':>13}"
                 continue
-            roi = (s["odds"] * s["y"]).sum() / len(s) * 100
+            roi = s["ret"].sum() / (len(s) * 100) * 100
             line += f"{f'{len(s)}本 {roi:.0f}%':>13}"
         print(line)
 

@@ -321,6 +321,7 @@ def cmd_predict(target_date: date | None = None):
                         bet_type=str(row.get("bet_type", "")),
                         combination=str(row.get("combination", "")),
                         model_prob=float(row["model_prob"]) if pd.notna(row.get("model_prob")) else None,
+                        market_prob=float(row["market_prob"]) if pd.notna(row.get("market_prob")) else None,
                         odds=float(row["odds"]) if pd.notna(row.get("odds")) else None,
                         expected_value=float(row["expected_value"]) if pd.notna(row.get("expected_value")) else None,
                         recommended_amount=amount,
