@@ -444,6 +444,12 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     max_odds = cfg_bet["max_odds"]
     max_bets = cfg_bet["max_bets_per_race"]
     fixed_amount = config.get("money_management", {}).get("fixed_bet_amount", 200)
+    # bet_type別の条件と、対象の買い式。これを見ていなかったため、
+    # 朝の predict で見送った買い目や停止中の買い式が日中に復活していた。
+    overrides = cfg_bet.get("bet_type_overrides", {})
+    _bt_map = {"2連単": "nirentan", "2連複": "nirenfuku",
+               "3連単": "sanrentan", "3連複": "sanrenfuku"}
+    allowed_types = {_bt_map.get(t, t) for t in cfg_bet.get("bet_types", [])}
 
     # 決着済みベットはそのまま保持
     settled_bets = [b for b in bets_existing if b.get("is_hit") is not None]
@@ -516,17 +522,32 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
 
         candidates = []
         for combo in combinations:
+            if allowed_types and combo["bet_type"] not in allowed_types:
+                continue          # 停止中の買い式（3連単・3連複）を除外
             key = (combo["bet_type"], combo["combination"])
             odds_val = odds_lookup.get(key)
             if odds_val is None or pd.isna(odds_val):
                 continue
-            if not (min_odds <= odds_val <= max_odds):
-                continue
             mp = combo["model_prob"]
             if mp is None:
                 continue
+
+            # bet_type別の条件を適用する。
+            # ここを見ていなかったため、朝の predict では見送られた買い目が
+            # 日中の更新で復活していた（2026-08-11 実測: 確率7.2%/21.6% の
+            # 買い目が min_model_prob=0.30 を無視して JSON に載っていた）。
+            ov = overrides.get(combo["bet_type"], {})
+            lo = ov.get("min_odds", min_odds)
+            hi = ov.get("max_odds", max_odds)
+            if not (lo <= odds_val <= hi):
+                continue
+            if ov.get("min_model_prob") is not None and mp < ov["min_model_prob"]:
+                continue
+            if ov.get("max_model_prob") is not None and mp > ov["max_model_prob"]:
+                continue
+
             ev = mp * odds_val
-            if ev >= min_ev:
+            if ev >= ov.get("min_ev", min_ev):
                 candidates.append({
                     "bet_type": combo["bet_type"],
                     "combination": combo["combination"],
