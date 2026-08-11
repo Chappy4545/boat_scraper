@@ -8,7 +8,10 @@
   <title>艇予想</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="css/style.css" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 </head>
 <body>
   <div class="app">
@@ -53,7 +56,7 @@
         <section id="page-bets" class="page active">
           <div class="page-head">
             <h2 class="page-title">推奨買い目</h2>
-            <span class="badge ev-badge">EV ≥ 1.20</span>
+            <span class="badge ev-badge" title="2連複のみ / 的中確率30%以上 / 期待値1.2以上">2連複・確率30%↑・EV1.2↑</span>
           </div>
           <div id="odds-refresh-time" style="font-size:0.75rem;color:#888;padding:2px 0 6px;"></div>
           <div id="yesterday-result"></div>
