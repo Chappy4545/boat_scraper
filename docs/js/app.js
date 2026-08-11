@@ -673,8 +673,28 @@ function buildRaceCard(r) {
     ? `<span class="badge badge-bets">推奨${betCount}件</span>`
     : "";
 
+  // 終了したレースは着順を出す。従来は出走表と予測だけで、結果を見るには
+  // 買い目ページへ戻る必要があった（買い目の無いレースは確認手段が無かった）。
+  const order = Array.isArray(r.result_order) ? r.result_order.slice(0, 3) : null;
+  const done = order && order.length >= 3;
+  const resultHtml = done
+    ? `<span class="result-order">結果 ${order.map(n =>
+        `<span class="bn bn-${n} bn-sm">${n}</span>`).join('<span class="ord-sep">›</span>')}</span>`
+    : "";
+
+  // 予測1着と実際の1着が一致したか（モデルの当たり外れが一目で分かる）
+  const preds = r.predictions ?? [];
+  const top = preds.length
+    ? [...preds].sort((a, b) => b.win_prob - a.win_prob)[0].boat_no
+    : null;
+  const mark = done && top
+    ? (top === order[0]
+        ? `<span class="pred-mark pred-mark--ok" title="予測1着が的中">予想的中</span>`
+        : `<span class="pred-mark" title="予測1着は ${top}号艇だった">予想 ${top}</span>`)
+    : "";
+
   return `
-    <div class="race-card${betCount > 0 ? " has-bets" : ""}" style="cursor:pointer">
+    <div class="race-card${betCount > 0 ? " has-bets" : ""}${done ? " is-done" : ""}" style="cursor:pointer">
       <div class="race-card__head">
         <span class="race-card__title">${r.stadium} R${r.race_no}</span>
         <div class="race-card__meta">
@@ -686,7 +706,11 @@ function buildRaceCard(r) {
       <div class="prob-row" id="prob-${r.id}">
         <span style="color:var(--muted);font-size:.75rem;">読込中…</span>
       </div>
-      ${betBadge ? `<div style="margin-top:.45rem">${betBadge}</div>` : ""}
+      ${resultHtml || betBadge ? `
+        <div class="race-card__foot">
+          ${resultHtml}${mark}
+          ${betBadge}
+        </div>` : ""}
     </div>`;
 }
 

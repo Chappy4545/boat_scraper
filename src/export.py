@@ -69,10 +69,24 @@ def export_day(target_date: date) -> dict:
                 "avg_st": e.avg_st,
             })
 
+        # 着順（1着から順の艇番）。races / bets どちらにも載せる。
+        # 買い目が無いレースでも結果は見たいので、race_ids 全体で引く。
+        order_map: dict[int, list[int]] = {}
+        if race_ids:
+            for rid, _order, boat in (
+                session.query(RaceResult.race_id, RaceResult.arrival_order, RaceResult.boat_no)
+                .filter(RaceResult.race_id.in_(race_ids))
+                .order_by(RaceResult.race_id, RaceResult.arrival_order)
+                .all()
+            ):
+                if boat is not None:
+                    order_map.setdefault(rid, []).append(int(boat))
+
         # races JSON
         races_json = []
         for r, s in races:
             races_json.append({
+                "result_order": order_map.get(r.id),
                 "id": r.id,
                 "race_date": str(r.race_date),
                 "stadium": s.name,
@@ -95,20 +109,8 @@ def export_day(target_date: date) -> dict:
             .all()
         )
 
-        # 着順（1着から順の艇番）。買い目カードに「何着だったか」を出すため。
-        # judge_live も同じキー result_order で書き込む。
-        order_map: dict[int, list[int]] = {}
-        if bets_raw:
-            rid_list = list({b.race_id for b, _, _ in bets_raw})
-            rows = (
-                session.query(RaceResult.race_id, RaceResult.arrival_order, RaceResult.boat_no)
-                .filter(RaceResult.race_id.in_(rid_list))
-                .order_by(RaceResult.race_id, RaceResult.arrival_order)
-                .all()
-            )
-            for rid, _order, boat in rows:
-                if boat is not None:
-                    order_map.setdefault(rid, []).append(int(boat))
+        # 着順は上で race_ids 全体から order_map を作ってあるのでそれを使う
+        # （judge_live も同じキー result_order で書き込む）
         bets_json = [
             {
                 "bet_id": b.id,

@@ -1317,3 +1317,23 @@ body {
 .bet-card.settled-hit, .bet-card.settled-miss { background-image: none; }
 .bet-card.settled-miss { opacity: .58; }
 #bet-list .sec-divider { grid-column: 1 / -1; }
+
+/* レースカードの結果表示。
+   従来は出走表と予測だけで、終わったレースの着順を見る手段が無かった
+   （買い目の無いレースは特に確認できなかった）。 */
+.race-card__foot {
+  display: flex; align-items: center; gap: .5rem; flex-wrap: wrap;
+  margin-top: .45rem; padding-top: .45rem;
+  border-top: 1px solid rgba(30,58,110,.5);
+}
+.race-card.is-done .prob-row { opacity: .55; }   /* 済んだレースの予測は退かせる */
+.pred-mark {
+  font-size: .64rem; color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
+}
+.pred-mark--ok {
+  color: var(--green);
+  border-color: rgba(102,187,106,.35);
+  background: rgba(102,187,106,.1);
+}
+.race-card__foot .badge-bets { margin-left: auto; }
