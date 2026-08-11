@@ -321,6 +321,7 @@ function renderYesterdayResult(yDate, bets) {
   const invested = settled.reduce((s, b) => s + (b.recommended_amount || 0), 0);
   const returned = hits.reduce((s, b) => s + (b.actual_payout || 0), 0);
   const roi      = invested > 0 ? returned / invested : 0;
+  const profit   = returned - invested;   // 損益。回収額だけでは増減が分からない
   const roiCls   = roi >= 1 ? "val-good" : "val-bad";
   const hitRate  = settled.length > 0 ? hits.length / settled.length : 0;
 
@@ -345,20 +346,20 @@ function renderYesterdayResult(yDate, bets) {
       </div>
       <div class="yesterday-card__stats">
         <div class="yesterday-stat">
-          <div class="yesterday-stat__val">${hits.length}<span class="yesterday-stat__denom">/${settled.length}</span></div>
-          <div class="yesterday-stat__label">的中</div>
-        </div>
-        <div class="yesterday-stat">
-          <div class="yesterday-stat__val">${(hitRate * 100).toFixed(0)}<span class="yesterday-stat__denom">%</span></div>
-          <div class="yesterday-stat__label">的中率</div>
-        </div>
-        <div class="yesterday-stat">
-          <div class="yesterday-stat__val ${roiCls}">¥${returned.toLocaleString()}</div>
-          <div class="yesterday-stat__label">回収</div>
+          <div class="yesterday-stat__val ${roiCls}">${profit >= 0 ? "+" : "−"}¥${Math.abs(profit).toLocaleString()}</div>
+          <div class="yesterday-stat__label">${profit >= 0 ? "▲ 損益" : "▼ 損益"}</div>
         </div>
         <div class="yesterday-stat">
           <div class="yesterday-stat__val ${roiCls}">${(roi * 100).toFixed(0)}<span class="yesterday-stat__denom">%</span></div>
-          <div class="yesterday-stat__label">ROI</div>
+          <div class="yesterday-stat__label">回収率</div>
+        </div>
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val">${hits.length}<span class="yesterday-stat__denom">/${settled.length}</span></div>
+          <div class="yesterday-stat__label">的中 ${(hitRate * 100).toFixed(0)}%</div>
+        </div>
+        <div class="yesterday-stat">
+          <div class="yesterday-stat__val">¥${invested.toLocaleString()}</div>
+          <div class="yesterday-stat__label">投資</div>
         </div>
       </div>
       ${hitsHtml}
@@ -724,89 +725,177 @@ function openRaceModal(raceId, title) {
 // ════════════════════════════════
 // 収支ページ
 // ════════════════════════════════
+// ── 収支タブ ──
+// 2026-08-11: 独立ページだった pdca.html をここに統合した。
+//   別ファイル・独自CSS(2,476字)・独自JS(6,957字)で二重管理になっており、
+//   スマホでは画面遷移も挟まって見づらかった。
+let _perfWindow = "30d";
+
 async function loadPerf() {
   const container = document.getElementById("perf-content");
   container.innerHTML = '<div class="empty">読込中…</div>';
   try {
-    const data = await api("data/performance.json").catch(() => null);
-    const perf = data;
-    const bt = data?.backtest ?? null;
-    let html = "";
-    if (perf && perf.settled_bets > 0) {
-      const roi = perf.roi ?? 0;
-      html += `
-        <p class="info-card__label" style="margin-bottom:.5rem;">実際の買い目実績</p>
-        <div class="stats-grid">
-          <div class="stat-card"><div class="stat-card__label">回収率</div>
-            <div class="stat-card__value ${roi>=1?"val-good":"val-bad"}">${(roi*100).toFixed(1)}%</div></div>
-          <div class="stat-card"><div class="stat-card__label">的中率</div>
-            <div class="stat-card__value val-gold">${((perf.hit_rate||0)*100).toFixed(1)}%</div></div>
-          <div class="stat-card"><div class="stat-card__label">的中</div>
-            <div class="stat-card__value">${perf.hits}/${perf.settled_bets}</div></div>
-          <div class="stat-card"><div class="stat-card__label">投資合計</div>
-            <div class="stat-card__value">¥${(perf.invested||0).toLocaleString()}</div></div>
-          <div class="stat-card"><div class="stat-card__label">回収合計</div>
-            <div class="stat-card__value ${roi>=1?"val-good":"val-bad"}">¥${(perf.returned||0).toLocaleString()}</div></div>
-        </div>`;
-    } else {
-      html += `<div class="info-card">
-        <div class="info-card__label">実績</div>
-        <div class="info-card__value val-muted">まだ買い目実績なし</div>
-        <div class="info-card__sub">予測実行後、結果が記録されると表示されます</div>
-      </div>`;
+    const [pdca, perf] = await Promise.all([
+      api("data/pdca.json").catch(() => null),
+      api("data/performance.json").catch(() => null),
+    ]);
+    if (!pdca && !perf) {
+      container.innerHTML = '<div class="empty">実績データがまだありません</div>';
+      return;
     }
-    if (bt) {
-      const roi = bt.roi ?? 0;
-      html += `
-        <p class="info-card__label" style="margin:.9rem 0 .5rem;">バックテスト参考値（${bt.date_start} 〜 ${bt.date_end}）</p>
-        <div class="stats-grid">
-          <div class="stat-card"><div class="stat-card__label">回収率</div>
-            <div class="stat-card__value ${roi>=1?"val-good":"val-bad"}">${(roi*100).toFixed(1)}%</div></div>
-          <div class="stat-card"><div class="stat-card__label">的中率</div>
-            <div class="stat-card__value val-gold">${((bt.hit_rate||0)*100).toFixed(1)}%</div></div>
-          <div class="stat-card"><div class="stat-card__label">購入レース</div>
-            <div class="stat-card__value">${(bt.bet_races||0).toLocaleString()}</div></div>
-          <div class="stat-card"><div class="stat-card__label">最大DD</div>
-            <div class="stat-card__value val-bad">${((bt.max_drawdown||0)*100).toFixed(1)}%</div></div>
-          <div class="stat-card"><div class="stat-card__label">平均オッズ</div>
-            <div class="stat-card__value">${(bt.avg_odds||0).toFixed(1)}x</div></div>
-        </div>`;
-    }
-
-    // 日別実績テーブル
-    const daily = data?.daily ?? [];
-    if (daily.length > 0) {
-      const rows = daily.map(d => {
-        const roi = d.roi ?? 0;
-        const hitRate = d.bets > 0 ? d.hits / d.bets : 0;
-        const roiCls = roi >= 1 ? "val-good" : roi > 0 ? "" : "val-bad";
-        return `<tr>
-          <td>${d.date}</td>
-          <td style="text-align:center">${d.bets}</td>
-          <td style="text-align:center">${d.hits}</td>
-          <td style="text-align:center;color:var(--gold)">${(hitRate*100).toFixed(0)}%</td>
-          <td style="text-align:right">¥${(d.invested||0).toLocaleString()}</td>
-          <td style="text-align:right">¥${(d.returned||0).toLocaleString()}</td>
-          <td style="text-align:right;font-weight:600" class="${roiCls}">${roi ? (roi*100).toFixed(0)+"%" : "—"}</td>
-        </tr>`;
-      }).join("");
-      html += `
-        <p class="info-card__label" style="margin:.9rem 0 .5rem;">日別実績</p>
-        <div class="daily-table-wrap">
-          <table class="daily-table">
-            <thead><tr>
-              <th>日付</th><th>件数</th><th>的中</th><th>的中率</th>
-              <th>投資</th><th>回収</th><th>ROI</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>`;
-    }
-
-    container.innerHTML = html || '<div class="empty">データなし</div>';
+    renderPerf(container, pdca, perf);
   } catch (e) {
     container.innerHTML = `<div class="empty">取得失敗 (${e.message})</div>`;
   }
+}
+
+function renderPerf(container, pdca, perf) {
+  const yen = n => (n == null ? "—" : (n < 0 ? "−" : "") + "¥" + Math.abs(Math.round(n)).toLocaleString());
+  const pct = (n, d = 1) => (n == null ? "—" : (n * 100).toFixed(d) + "%");
+  const W = { "7d": "直近7日", "30d": "直近30日", "all": "全期間" };
+
+  let html = "";
+
+  if (pdca && pdca.windows) {
+    const w = pdca.windows[_perfWindow] || pdca.windows["30d"] || pdca.windows["all"];
+    const t = (w && w.total) || {};
+    const good = (t.profit || 0) >= 0;
+
+    html += `
+      <div class="seg-group" id="perf-window">
+        ${Object.keys(W).filter(k => pdca.windows[k]).map(k =>
+          `<button class="seg${k === _perfWindow ? " active" : ""}" data-w="${k}">${W[k]}</button>`).join("")}
+      </div>`;
+
+    if (t.bets) {
+      html += `
+        <section class="day-panel ${good ? "day-panel--good" : "day-panel--bad"}" style="margin-top:.7rem">
+          <div class="day-panel__head">
+            <span class="day-panel__title">${W[_perfWindow]}の損益</span>
+            <span class="chip">${t.bets} 買い目</span>
+          </div>
+          <div class="day-hero">
+            <div class="day-hero__value ${good ? "is-good" : "is-bad"}">${good ? "+" : "−"}¥${Math.abs(Math.round(t.profit || 0)).toLocaleString()}</div>
+            <div class="day-hero__label">${good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
+          </div>
+          <div class="stat-row">
+            <div class="stat"><div class="stat__val">${pct(t.roi, 1)}</div><div class="stat__lab">回収率</div></div>
+            <div class="stat"><div class="stat__val">${t.hits}<span class="stat__sub">/${t.bets}</span></div><div class="stat__lab">的中</div></div>
+            <div class="stat"><div class="stat__val">${pct(t.hit_rate, 1)}</div><div class="stat__lab">的中率</div></div>
+            <div class="stat"><div class="stat__val">${yen(t.invested)}</div><div class="stat__lab">投資</div></div>
+          </div>
+        </section>`;
+    } else {
+      html += `<div class="empty" style="margin-top:.7rem">${W[_perfWindow]}の判定済み買い目はありません</div>`;
+    }
+
+    if (pdca.daily && pdca.daily.length) {
+      html += `<h3 class="info-heading">累積損益</h3><div id="perf-chart"></div>`;
+    }
+
+    // 買い式別は2種類以上あるときだけ（1種類なら上のサマリと同じ内容になる）
+    const bt = (w && w.by_bet_type) || {};
+    if (Object.keys(bt).length > 1) {
+      html += `<h3 class="info-heading">買い式別</h3>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>買い式</th><th>本数</th><th>的中率</th><th>回収率</th><th>損益</th></tr></thead>
+          <tbody>${Object.entries(bt).map(([k, a]) => `
+            <tr><td>${betTypeLabel(k)}</td><td>${a.bets}</td><td>${pct(a.hit_rate, 1)}</td>
+              <td class="${a.roi >= 1 ? "val-good" : "val-bad"}">${pct(a.roi, 1)}</td>
+              <td class="${a.profit >= 0 ? "val-good" : "val-bad"}">${yen(a.profit)}</td></tr>`).join("")}
+          </tbody></table></div>`;
+    }
+
+    // 確率帯別: 買い目の選び方が効いているかを見る中核
+    if (pdca.band_hit_rates && pdca.band_hit_rates.length) {
+      html += `<h3 class="info-heading">確率帯別（直近30日）</h3>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>帯</th><th>本数</th><th>予測</th><th>実際</th><th>回収率</th></tr></thead>
+          <tbody>${pdca.band_hit_rates.map(b => `
+            <tr><td>${b.band}</td><td>${b.n}</td><td>${pct(b.avg_model_prob, 1)}</td>
+              <td>${pct(b.hit_rate, 1)}</td>
+              <td class="${b.roi >= 1 ? "val-good" : "val-bad"}">${pct(b.roi, 1)}</td></tr>`).join("")}
+          </tbody></table></div>`;
+    }
+
+    const daily = (pdca.daily || []).filter(d => d.total && d.total.bets).slice(0, 30);
+    if (daily.length) {
+      html += `<h3 class="info-heading">日次</h3>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>日付</th><th>本数</th><th>的中</th><th>回収率</th><th>損益</th></tr></thead>
+          <tbody>${daily.map(d => `
+            <tr><td>${d.date.slice(5)}</td><td>${d.total.bets}</td><td>${d.total.hits}</td>
+              <td class="${d.total.roi >= 1 ? "val-good" : "val-bad"}">${pct(d.total.roi, 0)}</td>
+              <td class="${d.total.profit >= 0 ? "val-good" : "val-bad"}">${yen(d.total.profit)}</td></tr>`).join("")}
+          </tbody></table></div>`;
+    }
+  }
+
+  const b = perf && perf.backtest;
+  if (b) {
+    html += `<h3 class="info-heading">バックテスト参考値</h3>
+      <p class="info-note" style="margin:-.2rem 0 .5rem">${b.date_start} 〜 ${b.date_end}</p>
+      <div class="stat-row">
+        <div class="stat"><div class="stat__val">${pct(b.roi, 1)}</div><div class="stat__lab">回収率</div></div>
+        <div class="stat"><div class="stat__val">${pct(b.hit_rate, 1)}</div><div class="stat__lab">的中率</div></div>
+        <div class="stat"><div class="stat__val">${(b.bet_races || 0).toLocaleString()}</div><div class="stat__lab">購入レース</div></div>
+        <div class="stat"><div class="stat__val">${pct(b.max_drawdown, 1)}</div><div class="stat__lab">最大下落</div></div>
+      </div>`;
+  }
+
+  container.innerHTML = html;
+
+  const seg = document.getElementById("perf-window");
+  if (seg) seg.querySelectorAll(".seg").forEach(btn =>
+    btn.addEventListener("click", () => {
+      _perfWindow = btn.dataset.w;
+      renderPerf(container, pdca, perf);
+    }));
+
+  if (pdca && pdca.daily) renderCumChart(pdca.daily);
+}
+
+// 累積損益の折れ線。判定済みの日だけを古い順に積み上げる。
+// 線は2px、基準線は実線で控えめに、終点だけ点を置く。
+// 各点に不可視の当たり判定を重ね、触れると日付と累積額が出る。
+function renderCumChart(daily) {
+  const host = document.getElementById("perf-chart");
+  if (!host) return;
+  const pts = [...daily]
+    .filter(d => d.total && d.total.hits != null && d.total.bets)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!pts.length) { host.innerHTML = '<div class="empty">まだ判定済みの日がありません</div>'; return; }
+
+  let cum = 0;
+  const series = pts.map(d => ({ date: d.date, cum: (cum += d.total.profit || 0) }));
+  const W = 640, H = 200, PL = 8, PR = 8, PT = 16, PB = 22;
+  const ys = series.map(p => p.cum);
+  const yMin = Math.min(0, ...ys), yMax = Math.max(0, ...ys);
+  const range = (yMax - yMin) || 1;
+  const X = i => PL + (W - PL - PR) * (series.length === 1 ? 0.5 : i / (series.length - 1));
+  const Y = v => H - PB - (H - PT - PB) * (v - yMin) / range;
+  const last = series[series.length - 1].cum;
+  const good = last >= 0;
+  const stroke = good ? "var(--green)" : "var(--red)";
+  const line = series.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p.cum).toFixed(1)}`).join(" ");
+  const area = `${line} L${X(series.length - 1).toFixed(1)},${Y(0).toFixed(1)} L${X(0).toFixed(1)},${Y(0).toFixed(1)} Z`;
+
+  host.innerHTML = `
+    <div class="chart">
+      <svg viewBox="0 0 ${W} ${H}" role="img"
+           aria-label="累積損益の推移。${series[0].date} から ${series[series.length - 1].date} まで、最終 ${Math.round(last).toLocaleString()} 円">
+        <line class="chart__base" x1="${PL}" x2="${W - PR}" y1="${Y(0)}" y2="${Y(0)}"/>
+        <path d="${area}" fill="${stroke}" opacity=".10"/>
+        <path d="${line}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="${X(series.length - 1)}" cy="${Y(last)}" r="4" fill="${stroke}" class="chart__end"/>
+        ${series.map((p, i) => `<circle class="chart__hit" cx="${X(i)}" cy="${Y(p.cum)}" r="9"><title>${p.date}　${p.cum >= 0 ? "+" : "−"}¥${Math.abs(Math.round(p.cum)).toLocaleString()}</title></circle>`).join("")}
+      </svg>
+      <div class="chart__foot">
+        <span>${series[0].date.slice(5)}</span>
+        <span class="${good ? "val-good" : "val-bad"}">累積 ${good ? "+" : "−"}¥${Math.abs(Math.round(last)).toLocaleString()}（${series.length}日）</span>
+        <span>${series[series.length - 1].date.slice(5)}</span>
+      </div>
+    </div>`;
 }
 
 // ════════════════════════════════
@@ -826,6 +915,7 @@ function loadSettings() {
     ["停止条件", "25連敗 / 下落45%", "実測で最長12〜14連敗・最大下落31%が正常範囲のため"],
   ];
   container.innerHTML = `
+    <h3 class="info-heading" style="margin-top:0">いま動いている条件</h3>
     <div class="info-card">
       <div class="info-card__label">データ更新</div>
       <div class="info-card__value" style="font-size:.9rem">毎朝 8:00 収集・予測生成 → 日中毎時オッズ更新 → 22:30 判定</div>
@@ -846,8 +936,8 @@ function loadPage(page) {
   if (page === "bets")     loadBets();
   if (page === "races")    loadRaces();
   if (page === "perf")     loadPerf();
-  if (page === "settings") loadSettings();
-  if (page === "info")     renderInfoPage();
+  // 「設定」と「情報」は1ページに統合済み（現在の運用条件 → モデルの中身、の順）
+  if (page === "info")     { loadSettings(); renderInfoPage(); }
 }
 
 function renderInfoPage() {

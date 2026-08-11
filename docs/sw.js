@@ -1,14 +1,14 @@
-const CACHE_NAME = "boatrace-v5";
+const CACHE_NAME = "boatrace-v6";
 
-// v5 の変更点:
-//  - index.html / pdca.html / アイコンを追加。これらが無いとオフラインで
-//    アプリ自体が開けず、PWA として成立していなかった
-//  - addAll は1件でも失敗すると install 全体が失敗するため個別に登録する
-//  - 画面遷移(navigate)がオフラインで失敗したとき index.html を返す
+// v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
+//     開けず、PWA として成立していなかった。addAll は1件でも失敗すると
+//     install 全体が落ちるため個別に登録する。navigate がオフラインで
+//     失敗したときは index.html を返す。
+// v6: pdca.html を収支タブへ統合したため一覧から削除
+//     （存在しないファイルを登録しない）。
 const STATIC_ASSETS = [
   "./",
   "index.html",
-  "pdca.html",
   "css/style.css",
   "js/app.js",
   "manifest.json",

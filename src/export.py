@@ -424,7 +424,11 @@ def export_pdca() -> None:
                SUM(b.recommended_amount) AS invested,
                SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
         FROM bets b JOIN races r ON b.race_id=r.id
-        WHERE b.is_pass=0
+        -- is_hit IS NOT NULL が抜けていたため、未判定の買い目が「外れ」として
+        -- 集計されていた。2026-08-11 時点で 8/1以降が全て未判定だったため、
+        -- 日次・累積損益が -500万円という実在しない数字になっていた。
+        -- 他の集計(windows / band_hit_rates)には元から入っている条件。
+        WHERE b.is_pass=0 AND b.is_hit IS NOT NULL
         GROUP BY r.race_date, b.bet_type
         HAVING r.race_date >= date('now','-90 days')
         ORDER BY r.race_date DESC, b.bet_type

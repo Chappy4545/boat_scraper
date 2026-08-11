@@ -1234,3 +1234,53 @@ body {
   .bets-toolbar { margin-bottom: .35rem; }
   .filter-bar { margin-bottom: .45rem; }
 }
+
+/* ════════════════════════════════
+   収支タブ（2026-08-11 に pdca.html を統合）
+════════════════════════════════ */
+.seg-group {
+  display: inline-flex; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px; gap: 2px;
+}
+.seg {
+  border: 0; background: transparent; color: var(--muted);
+  font-size: .76rem; padding: .35rem .8rem; border-radius: 999px;
+  cursor: pointer; min-height: 32px;
+}
+.seg.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+/* 表: 罫線は最小限にして数値を主役にする */
+.tbl-wrap {
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); margin-bottom: .3rem;
+}
+.tbl {
+  width: 100%; border-collapse: collapse;
+  font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tbl th {
+  text-align: right; font-weight: 500; color: var(--muted);
+  font-size: .7rem; padding: .5rem .6rem;
+  border-bottom: 1px solid var(--border);
+}
+.tbl th:first-child, .tbl td:first-child { text-align: left; }
+.tbl td { padding: .45rem .6rem; border-bottom: 1px solid rgba(30,58,110,.45); text-align: right; }
+.tbl tbody tr:last-child td { border-bottom: 0; }
+
+/* 累積損益グラフ */
+.chart {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: .5rem .6rem .4rem; margin-bottom: .3rem;
+}
+.chart svg { width: 100%; height: auto; display: block; }
+.chart__base { stroke: var(--border); stroke-width: 1; }
+.chart__end { stroke: var(--surface); stroke-width: 2; }
+.chart__hit { fill: transparent; cursor: pointer; }
+.chart__hit:hover { fill: rgba(255,255,255,.12); }
+.chart__foot {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: .68rem; color: var(--muted); padding-top: .2rem;
+  font-variant-numeric: tabular-nums;
+}
+#page-perf .info-heading { margin-top: 1.1rem; }

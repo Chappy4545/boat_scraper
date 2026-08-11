@@ -31,11 +31,8 @@
         <li><button class="snav-btn" data-page="perf">
           <span class="snav-icon">📊</span><span>収支</span>
         </button></li>
-        <li><button class="snav-btn" data-page="settings">
-          <span class="snav-icon">⚙️</span><span>設定</span>
-        </button></li>
         <li><button class="snav-btn" data-page="info">
-          <span class="snav-icon">ℹ️</span><span>情報</span>
+          <span class="snav-icon">⚙️</span><span>モデル・設定</span>
         </button></li>
       </ul>
     </nav>
@@ -76,22 +73,15 @@
 
         <!-- 収支 -->
         <section id="page-perf" class="page">
-          <div class="page-head" style="display:flex;justify-content:space-between;align-items:center;">
-            <h2 class="page-title">実績・収支</h2>
-            <a href="pdca.html" style="color:#6faaff;text-decoration:none;font-size:13px;">📈 PDCA詳細 →</a>
-          </div>
+          <div class="page-head"><h2 class="page-title">実績・収支</h2></div>
           <div id="perf-content"></div>
         </section>
 
-        <!-- 設定 -->
-        <section id="page-settings" class="page">
-          <div class="page-head"><h2 class="page-title">システム設定</h2></div>
-          <div id="settings-content"></div>
-        </section>
-
-        <!-- 情報 -->
+        <!-- モデル・設定（2026-08-11 に「設定」と「情報」を統合。
+             内容が近く、タブを2つ使う価値が薄かった。5→4タブでナビも押しやすくなる） -->
         <section id="page-info" class="page">
-          <div class="page-head"><h2 class="page-title">モデル情報</h2></div>
+          <div class="page-head"><h2 class="page-title">モデル・設定</h2></div>
+          <div id="settings-content"></div>
           <div id="info-content"></div>
         </section>
 
@@ -112,13 +102,9 @@
         <span class="bnav-icon">📊</span>
         <span class="bnav-label">収支</span>
       </button>
-      <button class="bnav-btn" data-page="settings">
-        <span class="bnav-icon">⚙️</span>
-        <span class="bnav-label">設定</span>
-      </button>
       <button class="bnav-btn" data-page="info">
-        <span class="bnav-icon">ℹ️</span>
-        <span class="bnav-label">情報</span>
+        <span class="bnav-icon">⚙️</span>
+        <span class="bnav-label">モデル</span>
       </button>
     </nav>
 
