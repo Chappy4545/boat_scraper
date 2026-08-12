@@ -1091,6 +1091,34 @@ body {
   background: rgba(255,255,255,.02);
 }
 
+/* 取得が止まったときの警告。正常な日は描画されない。
+   色だけで伝えず、記号(!)と見出しの語でも状態が分かるようにする。 */
+.alert {
+  display: flex;
+  gap: .6rem;
+  align-items: flex-start;
+  margin-bottom: .6rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--gold);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: rgba(255,213,79,.10);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+.alert__icon {
+  flex: 0 0 1.35rem;
+  height: 1.35rem;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #1a1a1a;
+  font-weight: 700;
+  font-size: .82rem;
+}
+.alert__body { margin-top: .2rem; color: var(--muted); font-size: .76rem; }
+
 /* 数字が並ぶ箇所は等幅に揃える */
 .bets-summary, .bet-card__foot, .yesterday-hit-payout { font-variant-numeric: tabular-nums; }
 

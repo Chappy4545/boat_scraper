@@ -201,13 +201,19 @@ async function loadBets() {
   const yDate   = addDays(state.date, -1);
   try {
     const [bets, races, yBets, meta] = await Promise.all([
-      api(`data/bets_${state.date}.json`),
+      // 404 を投げさせない。ファイルが無いこと自体が知りたい情報で、
+      // 「買い目ゼロの日」と「取得が止まった日」は区別しないといけない。
+      api(`data/bets_${state.date}.json`).catch(e => {
+        if (e.message === "404") return null;
+        throw e;
+      }),
       api(`data/races_${state.date}.json`).catch(() => []),
       isToday ? api(`data/bets_${yDate}.json`).catch(() => []) : Promise.resolve([]),
       isToday ? api(`data/meta.json`).catch(() => null) : Promise.resolve(null),
     ]);
-    state._betsCache = bets;
+    state._betsCache = bets || [];
     state._racesCache = races;
+    renderHealthBanner(isToday, bets, races, meta);
 
     // 更新時刻は独立行にせず day-panel の中へ（スマホの縦を1行ぶん節約）
     let refreshText = "";
@@ -219,13 +225,17 @@ async function loadBets() {
     }
     document.getElementById("odds-refresh-time").textContent = "";
 
-    renderDayPanel(state.date, bets, refreshText);
+    renderDayPanel(state.date, state._betsCache, refreshText);
     renderYesterdayResult(yDate, yBets);
 
-    if (!bets.length) {
+    if (!state._betsCache.length) {
       document.getElementById("bets-filter-area").innerHTML = "";
       document.getElementById("bets-summary").innerHTML = "";
-      container.innerHTML = '<div class="empty">この日の推奨買い目はありません</div>';
+      // レースはあるのに買い目が無い＝条件を満たさなかった日（正常）。
+      // レースごと無い＝そもそも取得できていない（異常、上のバナーが出る）。
+      container.innerHTML = races.length
+        ? '<div class="empty">この日の推奨買い目はありません</div>'
+        : '<div class="empty">この日のレースデータがありません</div>';
       return;
     }
 
@@ -235,10 +245,58 @@ async function loadBets() {
     document.getElementById("bets-summary").innerHTML = "";
     document.getElementById("day-panel").innerHTML = "";
     document.getElementById("yesterday-result").innerHTML = "";
+    document.getElementById("health-banner").innerHTML = "";
     container.innerHTML = e.message === "404"
       ? '<div class="empty">この日のデータがありません</div>'
       : `<div class="empty">取得失敗 (${e.message})</div>`;
   }
+}
+
+// ── 取得が止まっていないかを画面で知らせる ──
+// 2026-08-13、朝の更新が動かなかった日に画面へ出たのは「データがありません」
+// だけだった。買い目ゼロの日と見分けがつかず、半日気づけなかった。
+// 異常なときだけ出す（正常な日は何も出さない）。
+function renderHealthBanner(isToday, bets, races, meta) {
+  const el = document.getElementById("health-banner");
+  if (!el) return;
+  el.innerHTML = "";
+  if (!isToday) return;
+
+  const now  = new Date();
+  const hour = now.getHours() + now.getMinutes() / 60;
+  const hm   = now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+
+  // 1) 今日のレースが1件も無い = 朝の更新が走っていない。
+  //    早朝はまだ取得していなくて当然なので 8 時以降だけ言う。
+  if (!races || !races.length) {
+    if (hour >= 8) {
+      el.innerHTML = healthAlert(
+        "今日のデータがまだありません",
+        `朝の更新が完了していません（${hm} 時点）。PC の電源とネットワークを確認してください。`
+      );
+    }
+    return;
+  }
+
+  // 2) レースはあるのにオッズ更新が止まっている。
+  //    開催時間帯は 15 分ごとに更新されるので、1 時間空いたら異常。
+  if (meta && meta.last_refreshed && hour >= 10 && hour <= 21.5) {
+    const mins = Math.round((now - new Date(meta.last_refreshed)) / 60000);
+    if (mins >= 60) {
+      el.innerHTML = healthAlert(
+        "オッズの更新が止まっています",
+        `最終更新から ${mins} 分経過しています。表示中のオッズと期待値は古い可能性があります。`
+      );
+    }
+  }
+}
+
+// 色だけに頼らず、記号と語で状態を示す
+function healthAlert(title, body) {
+  return `<div class="alert" role="status">
+    <span class="alert__icon" aria-hidden="true">!</span>
+    <div><strong>${title}</strong><div class="alert__body">${body}</div></div>
+  </div>`;
 }
 
 // ── その日の状況パネル ──

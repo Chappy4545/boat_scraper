@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v6";
+const CACHE_NAME = "boatrace-v7";
 
 // v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
 //     開けず、PWA として成立していなかった。addAll は1件でも失敗すると
@@ -6,6 +6,7 @@ const CACHE_NAME = "boatrace-v6";
 //     失敗したときは index.html を返す。
 // v6: pdca.html を収支タブへ統合したため一覧から削除
 //     （存在しないファイルを登録しない）。
+// v7: 取得停止を知らせる警告バナーを追加。旧 JS/CSS が残ると出ないので更新。
 const STATIC_ASSETS = [
   "./",
   "index.html",
