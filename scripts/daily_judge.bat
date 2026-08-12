@@ -1,5 +1,8 @@
 @echo off
-cd /d "c:\Users\kcs15\OneDrive\デスクトップ\boat_scraper"
+REM Move to the repo root without writing the path.
+REM The path contains Japanese characters; writing it here breaks when
+REM the file encoding differs from the console codepage.
+cd /d "%~dp0.."
 
 REM Use the real python, not the Microsoft Store alias in WindowsApps.
 REM The alias works in an interactive shell but fails under Task Scheduler
@@ -24,8 +27,7 @@ REM Warn only when results fall below the statistical threshold.
 git add docs/data/
 git diff --cached --quiet || git commit -m "auto: judge results %date%"
 REM Remote may have moved (cloud workflows push too). Rebase before pushing.
-REM Stash anything uncommitted first: rebase refuses to run with a dirty tree,
-REM which happens whenever files are being edited outside this batch.
+REM Stash anything uncommitted first: rebase refuses to run with a dirty tree.
 git stash push -u -m "auto-stash before pull" >> "%LOG%" 2>&1
 git pull --rebase -X theirs origin master >> "%LOG%" 2>&1
 git push >> "%LOG%" 2>&1
