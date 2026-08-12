@@ -40,6 +40,7 @@ def build_features(
     df = _merge_all(raw)
     df = _add_market_features(df, engine)
     df = _add_stadium_course_features(df, engine)
+    df = _add_form_features(df, engine)
     if include_target:
         df = _add_targets(df, engine)
 
@@ -57,6 +58,8 @@ def build_features_for_race(race_id: int) -> pd.DataFrame:
     df = _merge_all(raw)
     df = _add_market_features(df, engine)
     df = _add_stadium_course_features(df, engine)
+    # 予測時は対象レースの結果がまだ無いので、過去の履歴から直接引く
+    df = _add_form_for_prediction(df, engine)
     return _finalize(df)
 
 
@@ -358,9 +361,139 @@ FEATURE_COLS = [
     "boat_top2_rate", "boat_top3_rate", "boat_top2_z",
     # 場属性（stadiums テーブル由来）
     "is_saltwater",
+    # 自前の結果データから作る「調子」。出走表の印刷値は通算成績しか無く、
+    # 今の状態が分からなかった。市場（他の予想者）は直近成績を見ており、
+    # モデルが市場に負けている一因がここにあると考えて追加した。
+    # 2026-08-12 検証（訓練27,305 / 検証6,441レース）:
+    #   1着的中 55.78%→56.11% / 2連複30%帯 36.22%→36.53%
+    #   対数損失 0.19613→0.19514（市場は 0.19410）
+    # 直近勝率・直近3着内率・前走からの日数も試したが、入れると精度が
+    # 下がったため採用しない（37項目版より34項目版が全指標で良かった）。
+    "motor_form", "form_avg_rank", "venue_top3", "boat_no_top3",
 ]
 
 TARGET_COLS = ["target_win", "target_top2", "target_top3"]
+
+# 調子の特徴量（過去の結果からのみ計算。未来情報は使わない）
+FORM_COLS = ["motor_form", "form_avg_rank", "venue_top3", "boat_no_top3"]
+
+
+def _add_form_features(df: pd.DataFrame, engine) -> pd.DataFrame:
+    """自前の結果データから「調子」を付加する。
+
+    出走表に載るのは通算成績（半年〜1年の平均）だけで、今の状態が分からない。
+    そこで自前の race_results から直近の成績を計算する。
+
+    未来情報を絶対に混ぜないため:
+      - 各行の集計から自分自身の結果を必ず除く（shift(1)）
+      - 予測時は「そのレース日より前」の結果しか読まない
+    """
+    if df.empty:
+        return df
+
+    dates = pd.to_datetime(df["race_date"])
+    upto = dates.max()
+
+    sql = """
+        SELECT r.race_date, r.id AS race_id, s.code AS stadium_code,
+               rr.racer_no, rr.boat_no, rr.arrival_order, e.motor_no
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        JOIN stadiums s ON s.id = r.stadium_id
+        LEFT JOIN race_entries e ON e.race_id = rr.race_id AND e.boat_no = rr.boat_no
+        WHERE rr.racer_no IS NOT NULL AND rr.arrival_order IS NOT NULL
+          AND r.race_date <= :upto
+    """
+    try:
+        with engine.connect() as conn:
+            hist = pd.read_sql(text(sql), conn, params={"upto": str(upto.date())})
+    except Exception as e:
+        logger.warning(f"調子の特徴量: 履歴取得に失敗 ({e})")
+        for c in FORM_COLS:
+            df[c] = np.nan
+        return df
+
+    if hist.empty:
+        for c in FORM_COLS:
+            df[c] = np.nan
+        return df
+
+    hist["race_date"] = pd.to_datetime(hist["race_date"])
+    hist["is_top3"] = (hist["arrival_order"] <= 3).astype(float)
+
+    hist = hist.sort_values(["racer_no", "race_date", "race_id"])
+    g = hist.groupby("racer_no", sort=False)
+    hist["form_avg_rank"] = g["arrival_order"].transform(
+        lambda s: s.shift(1).rolling(10, min_periods=3).mean())
+    hist["venue_top3"] = (hist.groupby(["racer_no", "stadium_code"], sort=False)["is_top3"]
+                          .transform(lambda s: s.shift(1).expanding(min_periods=3).mean()))
+    hist["boat_no_top3"] = (hist.groupby(["racer_no", "boat_no"], sort=False)["is_top3"]
+                            .transform(lambda s: s.shift(1).expanding(min_periods=3).mean()))
+
+    hist = hist.sort_values(["stadium_code", "motor_no", "race_date", "race_id"])
+    hist["motor_form"] = (hist.groupby(["stadium_code", "motor_no"], sort=False)["is_top3"]
+                          .transform(lambda s: s.shift(1).rolling(20, min_periods=5).mean()))
+
+    return df.merge(hist[["race_id", "boat_no"] + FORM_COLS],
+                    on=["race_id", "boat_no"], how="left")
+
+
+def _add_form_for_prediction(df: pd.DataFrame, engine) -> pd.DataFrame:
+    """予測用。対象レースはまだ結果が無いので、過去の履歴から直接引く。"""
+    if df.empty:
+        return df
+    target_date = pd.to_datetime(df["race_date"]).max()
+
+    sql = """
+        SELECT r.race_date, s.code AS stadium_code, rr.racer_no, rr.boat_no,
+               rr.arrival_order, e.motor_no
+        FROM race_results rr
+        JOIN races r ON r.id = rr.race_id
+        JOIN stadiums s ON s.id = r.stadium_id
+        LEFT JOIN race_entries e ON e.race_id = rr.race_id AND e.boat_no = rr.boat_no
+        WHERE rr.racer_no IS NOT NULL AND rr.arrival_order IS NOT NULL
+          AND r.race_date < :d
+    """
+    try:
+        with engine.connect() as conn:
+            hist = pd.read_sql(text(sql), conn, params={"d": str(target_date.date())})
+    except Exception as e:
+        logger.warning(f"調子の特徴量: 履歴取得に失敗 ({e})")
+        hist = pd.DataFrame()
+
+    for c in FORM_COLS:
+        df[c] = np.nan
+    if hist.empty:
+        return df
+
+    hist["is_top3"] = (hist["arrival_order"] <= 3).astype(float)
+    hist["race_date"] = pd.to_datetime(hist["race_date"])
+    hist = hist.sort_values("race_date")
+
+    # 選手ごとの直近10走の平均着順
+    last10 = (hist.groupby("racer_no").tail(10)
+                  .groupby("racer_no")["arrival_order"].mean())
+    # 選手×場、選手×艇番、場×モーター の通算
+    venue = hist.groupby(["racer_no", "stadium_code"])["is_top3"].mean()
+    boatn = hist.groupby(["racer_no", "boat_no"])["is_top3"].mean()
+    motor = (hist.groupby(["stadium_code", "motor_no"]).tail(20)
+                 .groupby(["stadium_code", "motor_no"])["is_top3"].mean())
+
+    if "racer_no" in df.columns:
+        df["form_avg_rank"] = df["racer_no"].map(last10)
+        df["venue_top3"] = [
+            venue.get((r, s), np.nan)
+            for r, s in zip(df["racer_no"], df.get("stadium_code", pd.Series(index=df.index)))
+        ]
+        df["boat_no_top3"] = [
+            boatn.get((r, b), np.nan) for r, b in zip(df["racer_no"], df["boat_no"])
+        ]
+    if "motor_no" in df.columns:
+        df["motor_form"] = [
+            motor.get((s, m), np.nan)
+            for s, m in zip(df.get("stadium_code", pd.Series(index=df.index)), df["motor_no"])
+        ]
+    return df
 
 
 def _finalize(df: pd.DataFrame) -> pd.DataFrame:
