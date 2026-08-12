@@ -391,27 +391,42 @@ def cmd_judge(target_date: date | None = None):
     init_db(config)
     d = target_date or date.today()
 
+    from sqlalchemy import or_
+
     with get_session() as session:
+        # 見送った買い目も判定する。賭式ごとの比較（単勝/2連複/3連複のどれが
+        # 効くか）も「閾値を緩めていたらどうだったか」の後追い検証も、買わな
+        # かった買い目の結果が無いと一切できない。ペーパー記録を貯めていたのに
+        # is_pass=False で絞っていたため 2026-08-13 まで1件も判定されていなかった。
+        # オッズが無いものは当日買えなかった＝評価できないので除く。
         pairs = (
             session.query(Bet, Race)
             .join(Race, Bet.race_id == Race.id)
-            .filter(Race.race_date == d, Bet.is_pass == False, Bet.is_hit == None)
+            .filter(
+                Race.race_date == d,
+                Bet.is_hit == None,
+                or_(Bet.is_pass == False, Bet.odds != None),
+            )
             .all()
         )
+        # レース単位でまとめて引く。1件ずつ引くと1日 5,000 件で数千クエリになる。
+        race_ids = {race.id for _, race in pairs}
+        with_result = {
+            rid for (rid,) in session.query(RaceResult.race_id)
+            .filter(RaceResult.race_id.in_(race_ids)).distinct()
+        }
+        payouts = {
+            (p.race_id, p.bet_type, p.combination): p.payout
+            for p in session.query(Payout).filter(Payout.race_id.in_(race_ids))
+        }
+
         judged = 0
         for bet, race in pairs:
-            has_result = session.query(RaceResult).filter(
-                RaceResult.race_id == race.id
-            ).count() > 0
-            if not has_result:
+            if race.id not in with_result:
                 continue
-            payout = session.query(Payout).filter(
-                Payout.race_id == race.id,
-                Payout.bet_type == bet.bet_type,
-                Payout.combination == bet.combination,
-            ).first()
-            bet.is_hit = payout is not None
-            bet.actual_payout = payout.payout if payout else None
+            pay = payouts.get((race.id, bet.bet_type, bet.combination))
+            bet.is_hit = pay is not None
+            bet.actual_payout = pay
             judged += 1
 
     logger.info(f"的中判定完了: {d} {judged}件")
