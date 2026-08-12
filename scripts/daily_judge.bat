@@ -27,9 +27,17 @@ REM Warn only when results fall below the statistical threshold.
 git add docs/data/
 git diff --cached --quiet || git commit -m "auto: judge results %date%"
 REM Remote may have moved (cloud workflows push too). Rebase before pushing.
-REM Stash anything uncommitted first: rebase refuses to run with a dirty tree.
-git stash push -u -m "auto-stash before pull" >> "%LOG%" 2>&1
-git pull --rebase -X theirs origin master >> "%LOG%" 2>&1
-git push >> "%LOG%" 2>&1
-git stash pop >> "%LOG%" 2>&1
+REM Never stash/pop by hand around this. A pop conflict writes <<<<<<< markers
+REM into these very .bat files, cmd.exe cannot parse them, and the scheduled
+REM task then dies silently (2026-08-13: the morning update never ran).
+REM --autostash does the same job atomically, and on failure we abort so the
+REM working tree is always left in a runnable state.
+git fetch origin master >> "%LOG%" 2>&1
+git -c rebase.autoStash=true rebase -X theirs origin/master >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] rebase failed - aborting, keeping local >> "%LOG%"
+    git rebase --abort >> "%LOG%" 2>&1
+) else (
+    git push >> "%LOG%" 2>&1
+)
 echo [%date% %time%] JUDGE done >> "%LOG%"

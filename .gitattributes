@@ -1,0 +1,18 @@
+# .bat files are what the Windows scheduler executes. Keep their line endings
+# deterministic so git never sees them as "modified" when they are not.
+#
+# Why this matters: core.autocrlf=true made every run see scripts/*.bat as
+# dirty. daily_update.bat then stashed them, pulled, and popped -- and the pop
+# conflicted with itself, writing <<<<<<< markers into the running script.
+# cmd.exe cannot parse that, so the 08:00 task died silently for a whole day
+# (2026-08-13). Byte-stable .bat files remove the trigger entirely.
+*.bat text eol=crlf
+
+# Same reasoning for the shell scripts used by the cloud workflows.
+*.sh text eol=lf
+
+# Binary artefacts: never convert, never diff as text.
+*.joblib binary
+*.db binary
+*.gz binary
+*.png binary
