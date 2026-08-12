@@ -103,6 +103,11 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
     today = date.today()
     targets = []
 
+    # 再収集は直近数日に限る。中止レースは結果が永久に来ないので、
+    # 「揃っていない日」を無期限に対象にすると毎朝そこを取りに行き続ける。
+    recollect_days = 3
+    rejudge = []
+
     for i in range(1, lookback_days + 1):
         d = today - timedelta(days=i)
         with engine.connect() as conn:
@@ -110,15 +115,40 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
                 sa_text("SELECT COUNT(*) FROM races WHERE race_date = :d"),
                 {"d": str(d)}
             ).scalar()
-            result_cnt = conn.execute(
-                sa_text("""SELECT COUNT(*) FROM race_results rr
-                           JOIN races r ON rr.race_id = r.id
-                           WHERE r.race_date = :d"""),
-                {"d": str(d)}
-            ).scalar()
-        # レースは存在するが結果がない日 / レース自体を取り逃した日
-        if result_cnt == 0:
+            # 判定できていない買い目を、着順が既にあるか無いかで分ける。
+            # 「その日の着順が何件あるか」では判断できない。中止や欠場は普通に
+            # あり、どの日も理論値(レース数×6)には届かないため、件数で見ると
+            # 毎朝すべての日を再収集してしまう。
+            unjudged = dict(conn.execute(sa_text("""
+                SELECT EXISTS (SELECT 1 FROM race_results rr
+                               WHERE rr.race_id = b.race_id) AS has_result,
+                       COUNT(*)
+                  FROM bets b JOIN races r ON r.id = b.race_id
+                 WHERE r.race_date = :d AND b.is_pass = 0 AND b.is_hit IS NULL
+                 GROUP BY has_result"""), {"d": str(d)}).all())
+        judgeable = unjudged.get(1, 0)   # 着順あり → 判定を流すだけでよい
+        missing   = unjudged.get(0, 0)   # 着順なし → 取りに行かないと判定できない
+
+        if race_cnt == 0:
+            # その日を丸ごと取り逃した。レースと結果は遡って復元できるので
+            # lookback_days いっぱいまで対象にする（オッズだけは戻せない）。
             targets.append(d)
+        elif missing and i <= recollect_days:
+            # 夜のレースだけ取り逃した日がここに入る。旧実装は「結果が0件の日」
+            # しか見ておらず、一部だけ欠けた日は永久に取り残されていた
+            # （2026-08-11 の 5 レース分が2日間判定されないままだった）。
+            # 中止レースは着順が永久に来ないので、再収集は直近数日に限る。
+            targets.append(d)
+        elif judgeable:
+            # 着順は揃っているのに未判定＝判定だけ落ちた日。取得は要らない。
+            rejudge.append(d)
+
+    for d in sorted(rejudge):
+        logger.info(f"キャッチアップ(判定のみ): {d}")
+        try:
+            cmd_judge(d)
+        except Exception as e:
+            logger.error(f"  判定失敗 {d}: {e}")
 
     if not targets:
         return
