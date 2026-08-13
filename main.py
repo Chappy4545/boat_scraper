@@ -413,6 +413,96 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
     _purge_raw_cache(config)
 
 
+def _sync_bets_from_json(d: date) -> None:
+    """日中に更新された買い目（docs/data/bets_<d>.json）を DB に取り込む。
+
+    その日「実際に買えと表示した」買い目の記録は JSON 側にしかない。オッズの
+    再取得は GitHub Actions で 15 分ごとに動くが、そこからローカルの SQLite に
+    は書けないためだ。一方 judge は DB を見て判定し、export_day は DB から
+    JSON を作り直す。このままだと 22:30 の判定で「朝の買い目」が JSON を
+    上書きし、日中に条件を外れて消えた買い目まで結果つきで復活する。
+
+    2026-08-12 に実際に起きた: 20:33 時点で 18 本（うち確定 15 本）だったのが
+    22:31 に 30 本・確定 0 本へ戻り、13 本が結果つきで生えた。記録された
+    ROI 116% は「朝のリスト」の成績で、買えと表示したものの成績ではない。
+
+    そこで判定の前に JSON を正として DB を合わせる:
+      - JSON にある買い目 → DB に反映（オッズ・EV・確定フラグ）
+      - JSON から消えた買い目 → is_pass=1 にして損益から外す（行は残す）
+
+    JSON に確定フラグが1つも無い日は、日中の更新が動かなかった日なので
+    何もしない（DB の朝の買い目がその日の記録として正しい）。
+    """
+    import json
+    from datetime import datetime, time as dt_time
+    from pathlib import Path
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+
+    path = Path("docs/data") / f"bets_{d}.json"
+    if not path.exists():
+        return
+    try:
+        live = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"bets JSON を読めません {path}: {e}")
+        return
+    if not any(b.get("is_final_pick") for b in live):
+        return
+
+    live_by_key = {
+        (b["race_id"], b["bet_type"], b["combination"]): b for b in live
+    }
+    added = dropped = updated = 0
+    with get_session() as session:
+        rows = (
+            session.query(Bet).join(Race, Bet.race_id == Race.id)
+            .filter(Race.race_date == d).all()
+        )
+        seen = set()
+        version = rows[0].model_version if rows else "v1"
+        for bet in rows:
+            key = (bet.race_id, bet.bet_type, bet.combination)
+            src = live_by_key.get(key)
+            if src is None:
+                # 日中にオッズが動いて条件を外れた買い目。買っていないので
+                # 損益には数えないが、後から検証できるよう行は残す。
+                if not bet.is_pass:
+                    bet.is_pass = True
+                    bet.pass_reason = "日中に条件を外れた"
+                    dropped += 1
+                continue
+            seen.add(key)
+            bet.is_pass = False
+            bet.pass_reason = None
+            bet.odds = src.get("odds")
+            bet.expected_value = src.get("expected_value")
+            bet.recommended_amount = src.get("recommended_amount") or 0
+            bet.is_final_pick = bool(src.get("is_final_pick"))
+            updated += 1
+
+        for key, src in live_by_key.items():
+            if key in seen:
+                continue
+            # 日中に条件を満たして新しく載った買い目。JSON がその日に推奨した
+            # 証拠なので、created_at はレース日にする（BOUGHT の条件に合わせる）。
+            session.add(Bet(
+                race_id=src["race_id"], model_version=version,
+                bet_type=src["bet_type"], combination=src["combination"],
+                model_prob=src.get("model_prob"), odds=src.get("odds"),
+                expected_value=src.get("expected_value"),
+                recommended_amount=src.get("recommended_amount") or 0,
+                is_pass=False, is_final_pick=bool(src.get("is_final_pick")),
+                created_at=datetime.combine(d, dt_time(12, 0)),
+            ))
+            added += 1
+
+    logger.info(
+        f"日中の買い目を取り込み: {d} 反映={updated}件 追加={added}件 "
+        f"見送りへ={dropped}件"
+    )
+
+
 def cmd_judge(target_date: date | None = None):
     """当日の買い目に的中/外れを記録する。22:00 collect の後に実行する。"""
     from src.ingestion.database import init_db, get_session
@@ -420,6 +510,10 @@ def cmd_judge(target_date: date | None = None):
     config = load_config()
     init_db(config)
     d = target_date or date.today()
+
+    # 判定より先に、日中に更新された買い目を DB へ取り込む。
+    # これを飛ばすと朝のリストを判定してしまう（詳細は関数の説明）。
+    _sync_bets_from_json(d)
 
     from sqlalchemy import or_
 
@@ -529,6 +623,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     FINALIZE_BEFORE_MIN = 20      # 締切20分前を切ったら確定させる
     upcoming_race_ids: list[int] = []
     finalize_race_ids: set[int] = set()
+    closed_race_ids: set[int] = set()   # 締切済み＝もう触らないレース
     for race in races_data:
         rid = race["id"]
         if rid in keep_race_ids:
@@ -544,13 +639,31 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             upcoming_race_ids.append(rid)
             continue
         minutes_left = (closing_dt - now_jst).total_seconds() / 60
+        if minutes_left <= 0:
+            # 締切済み。ここで買い目を作り直してはいけない。締切後のオッズは
+            # 確定値なので、そこから EV を計算すると「レースが終わってから
+            # 買えたはずの買い目」が生える。2026-08-12 は表示された 18 本の
+            # うち 5 本がこれで、締切を過ぎてから一覧に載っていた
+            # （うち2本は締切の 13 分後と 46 分後）。
+            # 確定させ損ねたレースは「買い目なし」が正しい。すでに出ている
+            # ものは画面から消さないよう、そのまま凍結して残す。
+            closed_race_ids.add(rid)
+            continue
         if minutes_left <= FINALIZE_BEFORE_MIN:
-            # 締切間近、または既に締切を過ぎたのに未確定のもの。
-            # 実行が飛んでも取りこぼさないよう、過ぎた分もここで確定させる。
             upcoming_race_ids.append(rid)
             finalize_race_ids.add(rid)
         else:
             upcoming_race_ids.append(rid)
+
+    # 締切済みレースの買い目は現状のまま持ち越す（作り直さない）
+    kept_keys = {(b["race_id"], b["bet_type"], b["combination"]) for b in keep_bets}
+    for b in bets_existing:
+        if b["race_id"] not in closed_race_ids:
+            continue
+        k = (b["race_id"], b["bet_type"], b["combination"])
+        if k not in kept_keys:
+            keep_bets.append(b)
+            kept_keys.add(k)
 
     logger.info(
         f"refresh_odds: {d}  更新対象={len(upcoming_race_ids)}レース "

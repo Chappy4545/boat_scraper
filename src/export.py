@@ -30,6 +30,20 @@ BOUGHT = ("b.is_pass = 0 AND b.is_hit IS NOT NULL "
           "AND date(b.created_at) <= r.race_date")
 
 
+def live_since() -> str:
+    """現行ルールでの運用開始日。収支はこの日以降だけを集計する。
+
+    それ以前は別のルール・別のモデルで出した買い目なので、混ぜると
+    今のルールの成績が読めない。2026-08-10 だけで 357 本・-130,420 円あり、
+    直近7日の数字がその日にほぼ決まってしまっていた。
+    """
+    from src.utils.helpers import load_config
+    try:
+        return str(load_config().get("operation", {}).get("live_since") or "1970-01-01")
+    except Exception:
+        return "1970-01-01"
+
+
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -222,8 +236,9 @@ def export_probs(target_date: date) -> None:
 
 
 def export_performance() -> None:
-    """全期間の収支サマリー＋日別実績を docs/data/performance.json に保存する。"""
+    """現行ルールでの収支サマリー＋日別実績を docs/data/performance.json に保存する。"""
     _ensure_data_dir()
+    _ls = live_since()
     from src.ingestion.database import get_engine
     from sqlalchemy import text as sa_text
 
@@ -234,7 +249,8 @@ def export_performance() -> None:
             session.query(Bet)
             .join(Race, Bet.race_id == Race.id)
             .filter(Bet.is_pass == False,
-                    sa_func.date(Bet.created_at) <= Race.race_date)
+                    sa_func.date(Bet.created_at) <= Race.race_date,
+                    Race.race_date >= _ls)
             .all()
         )
         settled = [b for b in all_bets if b.is_hit is not None]
@@ -275,7 +291,7 @@ def export_performance() -> None:
                    SUM(CASE WHEN b.is_hit = 1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
             FROM bets b
             JOIN races r ON b.race_id = r.id
-            WHERE {BOUGHT}
+            WHERE {BOUGHT} AND r.race_date >= '{_ls}'
             GROUP BY r.race_date
             ORDER BY r.race_date DESC
             LIMIT 90
@@ -315,7 +331,10 @@ def export_pdca() -> None:
     - band_hit_rates: model_prob帯 × bet_type の実測hit率とROI (直近30日)
     - calibration_recheck: config.calibration_table_pl と実測の乖離
     - daily: 日次実績を bet_type別まで分解 (直近90日)
+
+    いずれも現行ルールの運用開始日以降だけを対象にする（live_since）。
     """
+    _ls = live_since()
     _ensure_data_dir()
     from datetime import datetime, timezone, timedelta
     from src.ingestion.database import get_engine
@@ -353,7 +372,7 @@ def export_pdca() -> None:
                    SUM(b.recommended_amount) AS invested,
                    SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
             FROM bets b JOIN races r ON b.race_id=r.id
-            WHERE {BOUGHT} {where_date}
+            WHERE {BOUGHT} AND r.race_date >= '{_ls}' {where_date}
             GROUP BY b.bet_type
         """
         with engine.connect() as conn:
@@ -392,7 +411,7 @@ def export_pdca() -> None:
                SUM(b.recommended_amount) AS invested,
                SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
         FROM bets b JOIN races r ON b.race_id=r.id
-        WHERE {BOUGHT} AND r.race_date >= date('now','-30 days')
+        WHERE {BOUGHT} AND r.race_date >= '{_ls}' AND r.race_date >= date('now','-30 days')
         GROUP BY b.bet_type, band_idx ORDER BY b.bet_type, band_idx
     """
     band_labels = {1:"0-3%",2:"3-5%",3:"5-7%",4:"7-10%",5:"10-15%",6:"15-20%",7:"20-30%",8:"30-50%",9:"50%+"}
@@ -435,7 +454,7 @@ def export_pdca() -> None:
                        SUM(b.recommended_amount),
                        SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END)
                 FROM bets b JOIN races r ON b.race_id=r.id
-                WHERE {BOUGHT}
+                WHERE {BOUGHT} AND r.race_date >= '{_ls}'
                   AND b.bet_type=:bt
                   AND ABS(b.model_prob - :tgt) < 0.0005
                   AND r.race_date >= date('now','-30 days')
@@ -472,7 +491,7 @@ def export_pdca() -> None:
         -- 集計されていた。2026-08-11 時点で 8/1以降が全て未判定だったため、
         -- 日次・累積損益が -500万円という実在しない数字になっていた。
         -- 他の集計(windows / band_hit_rates)には元から入っている条件。
-        WHERE {BOUGHT}
+        WHERE {BOUGHT} AND r.race_date >= '{_ls}'
         GROUP BY r.race_date, b.bet_type
         HAVING r.race_date >= date('now','-90 days')
         ORDER BY r.race_date DESC, b.bet_type
