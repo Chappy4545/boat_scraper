@@ -1,0 +1,153 @@
+"""毎日の健全性チェック。動いているか、貯まっているかを1画面で出す。
+
+検証は「毎日ちゃんと記録できていること」が前提になる。だが壊れ方は静かで、
+2026-08-13 までに実際に起きたのは全部この種類だった:
+    朝の更新が止まる / 判定が走らない / 確定オッズが入らない /
+    賭けていない買い目が損益に混じる / 買い目が締切後に増える
+どれもログを見に行かないと気づけなかった。毎日1回、結果だけを見る。
+
+出力は docs/data/health.json にも書き、異常なときだけ PWA が知らせる。
+
+使い方:
+    python scripts/daily_check.py              # 今日を見る
+    python scripts/daily_check.py 2026-08-12   # 日付指定
+"""
+from __future__ import annotations
+
+import json
+import math
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sqlalchemy import text                     # noqa: E402
+from src.ingestion.database import get_engine, init_db   # noqa: E402
+from src.utils.helpers import load_config       # noqa: E402
+
+JST = timezone(timedelta(hours=9))
+DATA = Path(__file__).resolve().parent.parent / "docs" / "data"
+CANDIDATE_REASON = "候補ルール(混合)"
+
+
+def q1(conn, sql: str, **p):
+    return conn.execute(text(sql), p).scalar() or 0
+
+
+def main() -> None:
+    cfg = load_config()
+    init_db(cfg)
+    d = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else datetime.now(JST).date()
+    now = datetime.now(JST)
+    rule = cfg.get("operation", {}).get("candidate_rule") or {}
+    live_since = str(cfg.get("operation", {}).get("live_since") or "1970-01-01")
+
+    checks: list[tuple[str, bool, str]] = []
+
+    with get_engine().connect() as conn:
+        races = q1(conn, "SELECT COUNT(*) FROM races WHERE race_date=:d", d=str(d))
+        checks.append(("レース取得", races > 0, f"{races}レース"))
+
+        bets = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                           WHERE r.race_date=:d AND b.is_pass=0""", d=str(d))
+        checks.append(("買い目生成", races == 0 or bets > 0, f"{bets}本"))
+
+        done = q1(conn, """SELECT COUNT(DISTINCT r.id) FROM races r
+                           WHERE r.race_date=:d AND EXISTS
+                           (SELECT 1 FROM race_results rr WHERE rr.race_id=r.id)""", d=str(d))
+        # 開催中の日は途中で当然なので、21時以降だけ厳しく見る
+        late = now.date() > d or now.hour >= 21
+        checks.append(("結果収集", (not late) or (races and done / races >= 0.95),
+                       f"{done}/{races}レース"))
+
+        judged = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                             WHERE r.race_date=:d AND b.is_pass=0 AND b.is_hit IS NOT NULL""",
+                    d=str(d))
+        checks.append(("判定", (not late) or bets == 0 or judged / bets >= 0.90,
+                       f"{judged}/{bets}本"))
+
+        full = q1(conn, """SELECT COUNT(*) FROM (
+                             SELECT o.race_id FROM odds o JOIN races r ON r.id=o.race_id
+                              WHERE r.race_date=:d AND o.bet_type='nirenfuku'
+                                AND o.is_final=1 AND o.odds>0
+                              GROUP BY o.race_id HAVING COUNT(*)=15)""", d=str(d))
+        checks.append(("確定オッズ", (not late) or (races and full / races >= 0.90),
+                       f"{full}/{races}レース" + (f" ({full / races * 100:.0f}%)" if races else "")))
+
+        cand_today = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                                 WHERE r.race_date=:d AND b.pass_reason=:cr""",
+                        d=str(d), cr=CANDIDATE_REASON)
+        cand_final = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                                 WHERE r.race_date=:d AND b.pass_reason=:cr
+                                   AND b.is_final_pick=1""", d=str(d), cr=CANDIDATE_REASON)
+        checks.append(("候補ルール記録", True, f"{cand_today}本（確定{cand_final}本）"))
+
+        # 累計の進み具合。締切前に確定したものだけが検証に使える。
+        cum = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                          WHERE b.pass_reason=:cr AND b.is_final_pick=1
+                            AND r.race_date>=:s""", cr=CANDIDATE_REASON, s=live_since)
+        cum_judged = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                                 WHERE b.pass_reason=:cr AND b.is_final_pick=1
+                                   AND b.is_hit IS NOT NULL AND r.race_date>=:s""",
+                        cr=CANDIDATE_REASON, s=live_since)
+        ret = q1(conn, """SELECT SUM(COALESCE(b.actual_payout,0)) FROM bets b
+                          JOIN races r ON r.id=b.race_id
+                          WHERE b.pass_reason=:cr AND b.is_final_pick=1
+                            AND b.is_hit IS NOT NULL AND r.race_date>=:s""",
+                 cr=CANDIDATE_REASON, s=live_since)
+        hits = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
+                           WHERE b.pass_reason=:cr AND b.is_final_pick=1
+                             AND b.is_hit=1 AND r.race_date>=:s""",
+                  cr=CANDIDATE_REASON, s=live_since)
+
+    meta = {}
+    try:
+        meta = json.loads((DATA / "meta.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    age = None
+    if meta.get("last_refreshed"):
+        age = (now - datetime.fromisoformat(meta["last_refreshed"])).total_seconds() / 60
+    racing_hours = 10 <= now.hour <= 21 and now.date() == d
+    checks.append(("クラウド更新",
+                   age is not None and (not racing_hours or age <= 40),
+                   "未取得" if age is None else f"{age:.0f}分前"))
+
+    ng = [c for c in checks if not c[1]]
+    print(f"=== {d} デイリーチェック（{now:%H:%M} 時点）===")
+    for name, ok, detail in checks:
+        print(f"  [{'OK' if ok else 'NG'}] {name:14} {detail}")
+
+    target = int(rule.get("stage2_min_bets") or 182)
+    stage1 = str(rule.get("stage1_date") or "")
+    print(f"\n--- 候補ルールの検証（{rule.get('name', '?')}）---")
+    print(f"  締切前に確定した買い目: 累計 {cum}本（判定済 {cum_judged}本）")
+    if cum_judged:
+        roi = ret / (cum_judged * 100) * 100
+        se = (math.sqrt((hits / cum_judged) * (1 - hits / cum_judged))
+              * (ret / max(hits, 1) / 100) / math.sqrt(cum_judged) * 100)
+        print(f"  暫定成績: 的中{hits / cum_judged * 100:.1f}%  回収{roi:.0f}% ±{2 * se:.0f}")
+    if stage1 and str(d) < stage1:
+        print(f"  第1段階（オッズ下振れの測定）: {stage1}")
+    print(f"  第2段階の目安: {target}本  → 残り {max(target - cum, 0)}本"
+          f"（1日6.6本なら約{max(target - cum, 0) / 6.6:.0f}日）")
+
+    out = {
+        "date": str(d), "checked_at": now.isoformat(),
+        "checks": [{"name": n, "ok": o, "detail": t} for n, o, t in checks],
+        "ng": [n for n, _, _ in ng],
+        "candidate": {"today": cand_today, "cumulative": cum,
+                      "judged": cum_judged, "target": target},
+    }
+    DATA.mkdir(parents=True, exist_ok=True)
+    (DATA / "health.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+
+    if ng:
+        print(f"\n⚠ 異常 {len(ng)}件: {', '.join(n for n, _, _ in ng)}")
+        sys.exit(1)
+    print("\nすべて正常")
+
+
+if __name__ == "__main__":
+    main()

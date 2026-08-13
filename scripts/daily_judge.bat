@@ -24,6 +24,11 @@ if errorlevel 1 (
 REM Warn only when results fall below the statistical threshold.
 "%PY%" scripts\watchdog.py >> "%LOG%" 2>&1
 
+REM One screen a day: did everything run, and is the evidence accruing.
+REM Every failure so far has been silent, so the result also goes to
+REM docs/data/health.json and the app raises it when something is off.
+"%PY%" scripts\daily_check.py >> "%LOG%" 2>&1
+
 git add docs/data/
 git diff --cached --quiet || git commit -m "auto: judge results %date%"
 REM Remote may have moved (cloud workflows push too). Rebase before pushing.

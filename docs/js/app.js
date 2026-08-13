@@ -208,7 +208,7 @@ async function loadBets() {
   const isToday = state.date === todayStr();
   const yDate   = addDays(state.date, -1);
   try {
-    const [bets, races, yBets, meta] = await Promise.all([
+    const [bets, races, yBets, meta, health] = await Promise.all([
       // 404 を投げさせない。ファイルが無いこと自体が知りたい情報で、
       // 「買い目ゼロの日」と「取得が止まった日」は区別しないといけない。
       api(`data/bets_${state.date}.json`).catch(e => {
@@ -219,6 +219,8 @@ async function loadBets() {
       isToday ? api(`data/bets_${yDate}.json`).catch(() => []) : Promise.resolve([]),
       // 検証モードかどうかは日付に関係なく要るので、meta は常に読む
       api(`data/meta.json`).catch(() => null),
+      // 前夜のデイリーチェック。異常があったときだけ知らせる。
+      api(`data/health.json`).catch(() => null),
     ]);
     // 検証中の候補ルールの買い目は、買う買い目と混ぜない。
     // 賭け金 0 で記録だけしているものなので、一覧に並べると紛らわしい。
@@ -227,6 +229,7 @@ async function loadBets() {
     state._betsCache = all.filter(b => b.rule !== "market_blend");
     state._racesCache = races;
     state._paper = !!(meta && meta.paper_mode);
+    state._health = health;
     renderHealthBanner(isToday, bets, races, meta);
 
     // 更新時刻は独立行にせず day-panel の中へ（スマホの縦を1行ぶん節約）
@@ -277,6 +280,15 @@ function renderHealthBanner(isToday, bets, races, meta) {
 
   // 検証モードは日付に関係なく常に出す。買い目の見た目は今までと同じなので、
   // これが無いと「買うつもりの買い目」と区別がつかない。
+  // 前夜のデイリーチェックで引っかかった項目。異常時だけ出す。
+  const h = state._health;
+  if (h && h.ng && h.ng.length) {
+    parts.push(healthAlert(
+      `昨夜の点検で ${h.ng.length} 件の異常`,
+      `${h.ng.join(" / ")} が想定どおりに動いていません（${h.date} 分）。`
+    ));
+  }
+
   if (meta && meta.paper_mode) parts.push(paperNotice());
 
   // 検証中の候補ルールが何本出ているか。買い目一覧には載せていないので、
