@@ -394,8 +394,8 @@ def cmd_predict(target_date: date | None = None):
 
 
 def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
-    """払戻一覧ページから終了済みレースの結果・払戻のみ収集する（22:30 judge 専用）。
-    collect コマンドと違い racelist/odds は取得しない。
+    """払戻一覧ページから終了済みレースの結果・払戻を収集し、確定オッズも揃える。
+    collect コマンドと違い racelist は取得しない。
     """
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import init_db
@@ -410,7 +410,39 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
         logger.info(f"  {key}: {len(df)} 件取得")
     summary = save_day(data)
     logger.info(f"結果収集完了: {summary}")
+
+    # 確定オッズをここで揃える。朝の update が取るのは発売直後の薄いオッズで、
+    # 1通りでも欠けるとそのレースは市場確率を作れず検証に使えない。
+    # ここを入れる前は 5月以降 15,774 レース中 4,732 レース（30%）しか
+    # 2連複15通りが揃っておらず、検証の母数が貯まらなかった。
+    # 確定オッズはレース後も公開されているので後から取れる
+    #（発売中の途中経過のオッズだけは遡及できない）。
+    _backfill_final_odds(d, max_workers=max_workers)
     _purge_raw_cache(config)
+
+
+def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
+    """その日の、確定オッズが揃っていないレースだけ取りに行く。"""
+    import subprocess
+    import sys as _sys
+    from pathlib import Path
+    script = Path(__file__).parent / "scripts" / "backfill_final_odds.py"
+    if not script.exists():
+        logger.warning("backfill_final_odds.py が見つかりません")
+        return
+    for bt in ("nirenfuku",):
+        try:
+            r = subprocess.run(
+                [_sys.executable, str(script), str(d), str(d),
+                 "--bet-type", bt, "--workers", str(max_workers),
+                 "--max-minutes", "20"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=1800,
+            )
+            tail = [ln for ln in (r.stdout or "").splitlines() if "完了" in ln]
+            logger.info(f"  確定オッズ({bt}): {tail[-1].split('- ')[-1] if tail else 'ログなし'}")
+        except Exception as e:
+            logger.warning(f"  確定オッズ({bt}) 取得失敗: {e}")
 
 
 def _sync_bets_from_json(d: date) -> None:
