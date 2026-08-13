@@ -220,7 +220,11 @@ async function loadBets() {
       // 検証モードかどうかは日付に関係なく要るので、meta は常に読む
       api(`data/meta.json`).catch(() => null),
     ]);
-    state._betsCache = bets || [];
+    // 検証中の候補ルールの買い目は、買う買い目と混ぜない。
+    // 賭け金 0 で記録だけしているものなので、一覧に並べると紛らわしい。
+    const all = bets || [];
+    state._candCache = all.filter(b => b.rule === "market_blend");
+    state._betsCache = all.filter(b => b.rule !== "market_blend");
     state._racesCache = races;
     state._paper = !!(meta && meta.paper_mode);
     renderHealthBanner(isToday, bets, races, meta);
@@ -274,6 +278,19 @@ function renderHealthBanner(isToday, bets, races, meta) {
   // 検証モードは日付に関係なく常に出す。買い目の見た目は今までと同じなので、
   // これが無いと「買うつもりの買い目」と区別がつかない。
   if (meta && meta.paper_mode) parts.push(paperNotice());
+
+  // 検証中の候補ルールが何本出ているか。買い目一覧には載せていないので、
+  // ここで件数だけ知らせないと動いていることが分からない。
+  const cand = state._candCache || [];
+  if (cand.length) {
+    const fin = cand.filter(b => b.is_final_pick).length;
+    parts.push(`<div class="notice notice--quiet" role="note">
+      <span class="notice__icon" aria-hidden="true">候補</span>
+      <div><strong>検証中のルールが ${cand.length} 本</strong>
+      <div class="notice__body">市場7:モデル3の混合ルール。買い目一覧には載せていません
+      （賭け金0で記録のみ）。${fin ? `うち締切前に確定 ${fin} 本。` : ""}</div></div>
+    </div>`);
+  }
 
   if (isToday) {
     const now  = new Date();

@@ -445,6 +445,11 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
             logger.warning(f"  確定オッズ({bt}) 取得失敗: {e}")
 
 
+# 検証中の候補ルールで出した買い目の見送り理由。買っていないので損益には
+# 数えないが、判定はされるので後から成績を測れる。集計から外す目印でもある。
+CANDIDATE_REASON = "候補ルール(混合)"
+
+
 def _sync_bets_from_json(d: date) -> None:
     """日中に更新された買い目（docs/data/bets_<d>.json）を DB に取り込む。
 
@@ -505,11 +510,19 @@ def _sync_bets_from_json(d: date) -> None:
                     dropped += 1
                 continue
             seen.add(key)
-            bet.is_pass = False
-            bet.pass_reason = None
+            # 検証中の候補ルールの買い目は買っていない。損益に混ぜないよう
+            # 見送り扱いのまま残す（判定はされるので後から成績を測れる）。
+            if src.get("rule") == "market_blend":
+                bet.is_pass = True
+                bet.pass_reason = CANDIDATE_REASON
+                bet.recommended_amount = 0
+            else:
+                bet.is_pass = False
+                bet.pass_reason = None
+                bet.recommended_amount = src.get("recommended_amount") or 0
             bet.odds = src.get("odds")
             bet.expected_value = src.get("expected_value")
-            bet.recommended_amount = src.get("recommended_amount") or 0
+            bet.market_prob = src.get("market_prob", bet.market_prob)
             bet.is_final_pick = bool(src.get("is_final_pick"))
             updated += 1
 
@@ -518,13 +531,18 @@ def _sync_bets_from_json(d: date) -> None:
                 continue
             # 日中に条件を満たして新しく載った買い目。JSON がその日に推奨した
             # 証拠なので、created_at はレース日にする（BOUGHT の条件に合わせる）。
+            is_cand = src.get("rule") == "market_blend"
             session.add(Bet(
                 race_id=src["race_id"], model_version=version,
                 bet_type=src["bet_type"], combination=src["combination"],
-                model_prob=src.get("model_prob"), odds=src.get("odds"),
+                model_prob=src.get("model_prob"),
+                market_prob=src.get("market_prob"),
+                odds=src.get("odds"),
                 expected_value=src.get("expected_value"),
-                recommended_amount=src.get("recommended_amount") or 0,
-                is_pass=False, is_final_pick=bool(src.get("is_final_pick")),
+                recommended_amount=0 if is_cand else (src.get("recommended_amount") or 0),
+                is_pass=is_cand,
+                pass_reason=CANDIDATE_REASON if is_cand else None,
+                is_final_pick=bool(src.get("is_final_pick")),
                 created_at=datetime.combine(d, dt_time(12, 0)),
             ))
             added += 1
@@ -640,6 +658,13 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                "3連単": "sanrentan", "3連複": "sanrenfuku"}
     allowed_types = {_bt_map.get(t, t) for t in cfg_bet.get("bet_types", [])}
 
+    # 検証中の候補ルール（operation.candidate_rule）。閾値は config に
+    # 事前登録してある。ここで動かすと後から都合よく変えられるので読むだけ。
+    _cand = config.get("operation", {}).get("candidate_rule") or {}
+    BLEND_ON = bool(_cand)
+    BLEND_W, BLEND_MIN_P, BLEND_MIN_EV = 0.3, 0.10, 1.2
+    BLEND_TYPE = _bt_map.get(_cand.get("bet_type", "2連複"), "nirenfuku")
+
     # 決着済み・確定済みの買い目はそのまま保持する。
     # 朝の買い目は目安にすぎず、オッズが動けば EV も変わる。日中ずっと
     # 更新され続けると「いつ買えばいいのか」が分からないため、締切が
@@ -744,7 +769,23 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             for _, row in odds_all.iterrows()
         }
 
+        # 市場の含意確率。賭式ごとに 1/オッズ を正規化して控除率を取り除く。
+        # 1通りでも欠けると正規化できないので、揃っている賭式だけ作る。
+        market: dict[tuple[str, str], float] = {}
+        need = {"nirenfuku": 15, "tansho": 6, "sanrenfuku": 20, "sanrentan": 120}
+        by_type: dict[str, list] = {}
+        for (bt, cb), o in odds_lookup.items():
+            if o and not pd.isna(o) and o > 0:
+                by_type.setdefault(bt, []).append((cb, float(o)))
+        for bt, items in by_type.items():
+            if len(items) != need.get(bt):
+                continue
+            total = sum(1.0 / o for _, o in items)
+            for cb, o in items:
+                market[(bt, cb)] = (1.0 / o) / total
+
         candidates = []
+        blend_picks = []
         for combo in combinations:
             if allowed_types and combo["bet_type"] not in allowed_types:
                 continue          # 停止中の買い式（3連単・3連複）を除外
@@ -755,6 +796,25 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             mp = combo["model_prob"]
             if mp is None:
                 continue
+
+            # 検証中の候補ルール（config の operation.candidate_rule）。
+            # 買わない。締切間際に見えていた板で記録を残すのが目的で、
+            # 確定オッズで測った 186% がそのまま出るかを確かめるために要る。
+            # 選ぶのは「まだ誰も買っていない＝オッズが高い」買い目なので、
+            # 締切までに資金が入って下がる。その目減りは実測するしかない。
+            pk = market.get(key) if BLEND_ON and combo["bet_type"] == BLEND_TYPE else None
+            if pk:
+                pb = BLEND_W * mp + (1 - BLEND_W) * pk
+                if pb >= BLEND_MIN_P and pb * odds_val >= BLEND_MIN_EV:
+                    blend_picks.append({
+                        "bet_type": combo["bet_type"],
+                        "combination": combo["combination"],
+                        "model_prob": round(mp, 4),
+                        "market_prob": round(pk, 4),
+                        "blend_prob": round(pb, 4),
+                        "odds": odds_val,
+                        "expected_value": round(pb * odds_val, 4),
+                    })
 
             # bet_type別の条件を適用する。
             # ここを見ていなかったため、朝の predict では見送られた買い目が
@@ -785,7 +845,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         candidates = candidates[:max_bets]
         for c in candidates:
             del c["_ev"]
-        return race_id, candidates
+        return race_id, candidates, blend_picks
 
     new_bets: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -793,35 +853,42 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         for future in as_completed(futures):
             rid = futures[future]
             try:
-                race_id, race_bets = future.result()
+                race_id, race_bets, race_blend = future.result()
                 meta = race_meta.get(race_id, {})
+                common = {
+                    "bet_id": None,
+                    "race_id": race_id,
+                    "stadium_name": meta.get("stadium", ""),
+                    "race_no": meta.get("race_no"),
+                    "grade": meta.get("grade"),
+                    "race_type": meta.get("race_type"),
+                    "closing_time": meta.get("closing_time"),
+                    "is_night": meta.get("is_night"),
+                    "is_hit": None,
+                    "actual_payout": None,
+                    # 締切間近で固定した「これを買えばよい」買い目
+                    "is_final_pick": race_id in finalize_race_ids,
+                }
                 for b in race_bets:
-                    new_bets.append({
-                        "bet_id": None,
-                        "race_id": race_id,
-                        "stadium_name": meta.get("stadium", ""),
-                        "race_no": meta.get("race_no"),
-                        "grade": meta.get("grade"),
-                        "race_type": meta.get("race_type"),
-                        "closing_time": meta.get("closing_time"),
-                        "is_night": meta.get("is_night"),
-                        **b,
-                        "recommended_amount": fixed_amount,
-                        "is_hit": None,
-                        "actual_payout": None,
-                        # 締切間近で固定した「これを買えばよい」買い目
-                        "is_final_pick": race_id in finalize_race_ids,
-                    })
+                    new_bets.append({**common, **b,
+                                     "recommended_amount": fixed_amount,
+                                     "rule": "r5"})
+                for b in race_blend:
+                    # 検証中の候補。賭け金 0 で、画面でも別扱いにする。
+                    new_bets.append({**common, **b,
+                                     "recommended_amount": 0,
+                                     "rule": "market_blend"})
             except Exception as e:
                 logger.warning(f"race_id={rid} オッズ更新失敗: {e}")
 
     new_bets.sort(key=lambda b: (b.get("race_no") or 0, -(b.get("expected_value") or 0)))
     all_bets = keep_bets + new_bets
     n_final = sum(1 for b in all_bets if b.get("is_final_pick"))
+    n_blend = sum(1 for b in all_bets if b.get("rule") == "market_blend")
     bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(
         f"refresh_odds完了: 保持={len(keep_bets)}件 更新={len(new_bets)}件 "
-        f"（確定済み合計={n_final}件）"
+        f"（確定済み合計={n_final}件 / 候補ルール={n_blend}件）"
     )
 
     from src.export import export_meta

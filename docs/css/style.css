@@ -1145,6 +1145,10 @@ body {
 }
 .notice__body { margin-top: .25rem; color: var(--muted); font-size: .76rem; }
 
+/* 状況の共有だけで、行動を促さないもの */
+.notice--quiet { border-left-color: var(--muted); }
+.notice--quiet .notice__icon { background: var(--muted); color: #10203a; }
+
 /* 数字が並ぶ箇所は等幅に揃える */
 .bets-summary, .bet-card__foot, .yesterday-hit-payout { font-variant-numeric: tabular-nums; }
 
