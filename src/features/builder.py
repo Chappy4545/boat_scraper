@@ -6,6 +6,8 @@ DB から race_entries / before_info / weather / odds / race_results を結合�
 """
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import numpy as np
 from sqlalchemy import text
@@ -371,6 +373,27 @@ FEATURE_COLS = [
     # 下がったため採用しない（37項目版より34項目版が全指標で良かった）。
     "motor_form", "form_avg_rank", "venue_top3", "boat_no_top3",
 ]
+
+# 直前情報（展示タイム・気象）。既定では使わない。
+#
+# 2026-06-10 に外した理由は「5/21 以降が未収集で、推論時に中央値で埋まる
+# だけの列になっていた」こと。その後バックフィルして 1〜8月が揃ったので、
+# 外した前提はもう成立していない。
+#
+# ただし本番モデルは 34 項目で保存されており、列を増やすと予測が
+# 落ちる（特徴量数の不一致）。効果を確かめるまでは既定に入れない。
+#   検証時のみ: BOAT_EXTRA_FEATURES=1
+EXTRA_FEATURE_COLS = [
+    # 展示（レース 20〜30 分前に公開される。その日の実際の伸びが出る）
+    "exh_time_rank", "exh_time_z", "exh_st_rank",
+    "tilt", "propeller_changed", "weight_diff",
+    # 気象（水面の状態で有利なコースが変わる）
+    "wind_speed", "wind_strong", "wind_direction_num", "wave_height",
+    "weather_num", "temperature", "water_temperature",
+]
+
+if os.environ.get("BOAT_EXTRA_FEATURES") == "1":
+    FEATURE_COLS = FEATURE_COLS + EXTRA_FEATURE_COLS
 
 TARGET_COLS = ["target_win", "target_top2", "target_top3"]
 
