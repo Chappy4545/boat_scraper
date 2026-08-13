@@ -25,8 +25,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# R5 の運用開始日。これより前は旧ルール・旧モデルの買い目なので混ぜない。
-LIVE_SINCE = "2026-08-12"
+def live_since() -> str:
+    """運用開始日。これより前は旧ルール・旧モデルの買い目なので混ぜない。
+
+    PWA の収支表示（src/export.py の live_since）と同じ値を使う。
+    ここだけ別の日付を持っていると、通知と画面で数字が食い違う。
+    """
+    from src.export import live_since as _ls
+    return _ls()
 
 # 1本あたりのばらつき（円／100円賭け）。実測の的中率と平均配当から。
 SD_PER_BET = 476 * math.sqrt(0.309 * (1 - 0.309))
@@ -56,7 +62,7 @@ def fetch():
         WHERE b.is_pass = 0 AND b.is_hit IS NOT NULL AND r.race_date >= :since
     """
     with get_engine().connect() as conn:
-        row = conn.execute(text(sql), {"since": LIVE_SINCE}).fetchone()
+        row = conn.execute(text(sql), {"since": live_since()}).fetchone()
     return {
         "bets": int(row[0] or 0), "hits": int(row[1] or 0),
         "invested": int(row[2] or 0), "returned": int(row[3] or 0),
