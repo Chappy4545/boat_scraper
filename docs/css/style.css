@@ -1119,6 +1119,32 @@ body {
 }
 .alert__body { margin-top: .2rem; color: var(--muted); font-size: .76rem; }
 
+/* 検証モードの常設の断り書き。異常ではないので警告色は使わない。 */
+.notice {
+  display: flex;
+  gap: .6rem;
+  align-items: flex-start;
+  margin-bottom: .6rem;
+  padding: .7rem .8rem;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent-lt);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+.notice__icon {
+  flex: 0 0 auto;
+  padding: .1rem .4rem;
+  border-radius: 4px;
+  background: var(--accent-lt);
+  color: #08182c;
+  font-weight: 700;
+  font-size: .68rem;
+  letter-spacing: .04em;
+}
+.notice__body { margin-top: .25rem; color: var(--muted); font-size: .76rem; }
+
 /* 数字が並ぶ箇所は等幅に揃える */
 .bets-summary, .bet-card__foot, .yesterday-hit-payout { font-variant-numeric: tabular-nums; }
 

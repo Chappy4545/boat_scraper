@@ -18,7 +18,15 @@ const state = {
   evInfoOpen: false,
   _racesCache: [],
   _betsCache:  [],
+  // 検証モード（賭けずに記録だけしている状態）。meta.json から入る。
+  // 収支タブは買い目タブを開かずに見られるので、起動時に一度読んでおく。
+  _paper: false,
 };
+
+fetch("data/meta.json", { cache: "no-store" })
+  .then(r => (r.ok ? r.json() : null))
+  .then(m => { if (m && m.paper_mode) state._paper = true; })
+  .catch(() => {});
 
 // ════════════════════════════════
 // ユーティリティ
@@ -209,10 +217,12 @@ async function loadBets() {
       }),
       api(`data/races_${state.date}.json`).catch(() => []),
       isToday ? api(`data/bets_${yDate}.json`).catch(() => []) : Promise.resolve([]),
-      isToday ? api(`data/meta.json`).catch(() => null) : Promise.resolve(null),
+      // 検証モードかどうかは日付に関係なく要るので、meta は常に読む
+      api(`data/meta.json`).catch(() => null),
     ]);
     state._betsCache = bets || [];
     state._racesCache = races;
+    state._paper = !!(meta && meta.paper_mode);
     renderHealthBanner(isToday, bets, races, meta);
 
     // 更新時刻は独立行にせず day-panel の中へ（スマホの縦を1行ぶん節約）
@@ -259,36 +269,39 @@ async function loadBets() {
 function renderHealthBanner(isToday, bets, races, meta) {
   const el = document.getElementById("health-banner");
   if (!el) return;
-  el.innerHTML = "";
-  if (!isToday) return;
+  const parts = [];
 
-  const now  = new Date();
-  const hour = now.getHours() + now.getMinutes() / 60;
-  const hm   = now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+  // 検証モードは日付に関係なく常に出す。買い目の見た目は今までと同じなので、
+  // これが無いと「買うつもりの買い目」と区別がつかない。
+  if (meta && meta.paper_mode) parts.push(paperNotice());
 
-  // 1) 今日のレースが1件も無い = 朝の更新が走っていない。
-  //    早朝はまだ取得していなくて当然なので 8 時以降だけ言う。
-  if (!races || !races.length) {
-    if (hour >= 8) {
-      el.innerHTML = healthAlert(
-        "今日のデータがまだありません",
-        `朝の更新が完了していません（${hm} 時点）。PC の電源とネットワークを確認してください。`
-      );
+  if (isToday) {
+    const now  = new Date();
+    const hour = now.getHours() + now.getMinutes() / 60;
+    const hm   = now.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+
+    if (!races || !races.length) {
+      // 今日のレースが1件も無い = 朝の更新が走っていない。
+      // 早朝はまだ取得していなくて当然なので 8 時以降だけ言う。
+      if (hour >= 8) {
+        parts.push(healthAlert(
+          "今日のデータがまだありません",
+          `朝の更新が完了していません（${hm} 時点）。PC の電源とネットワークを確認してください。`
+        ));
+      }
+    } else if (meta && meta.last_refreshed && hour >= 10 && hour <= 21.5) {
+      // レースはあるのにオッズ更新が止まっている。
+      // 開催時間帯は 15 分ごとに更新されるので、1 時間空いたら異常。
+      const mins = Math.round((now - new Date(meta.last_refreshed)) / 60000);
+      if (mins >= 60) {
+        parts.push(healthAlert(
+          "オッズの更新が止まっています",
+          `最終更新から ${mins} 分経過しています。表示中のオッズと期待値は古い可能性があります。`
+        ));
+      }
     }
-    return;
   }
-
-  // 2) レースはあるのにオッズ更新が止まっている。
-  //    開催時間帯は 15 分ごとに更新されるので、1 時間空いたら異常。
-  if (meta && meta.last_refreshed && hour >= 10 && hour <= 21.5) {
-    const mins = Math.round((now - new Date(meta.last_refreshed)) / 60000);
-    if (mins >= 60) {
-      el.innerHTML = healthAlert(
-        "オッズの更新が止まっています",
-        `最終更新から ${mins} 分経過しています。表示中のオッズと期待値は古い可能性があります。`
-      );
-    }
-  }
+  el.innerHTML = parts.join("");
 }
 
 // 色だけに頼らず、記号と語で状態を示す
@@ -296,6 +309,16 @@ function healthAlert(title, body) {
   return `<div class="alert" role="status">
     <span class="alert__icon" aria-hidden="true">!</span>
     <div><strong>${title}</strong><div class="alert__body">${body}</div></div>
+  </div>`;
+}
+
+// 検証モードの告知。異常ではないので警告色は使わず、常設の断り書きにする。
+function paperNotice() {
+  return `<div class="notice" role="note">
+    <span class="notice__icon" aria-hidden="true">検証</span>
+    <div><strong>この買い目は賭けていません</strong>
+    <div class="notice__body">モデルは市場より正確でないと確認できたため、実際の購入は止めています。
+    記録と判定は続いているので、表示中の損益は「賭けていたらこうなった」という仮の数字です。</div></div>
   </div>`;
 }
 
@@ -355,7 +378,8 @@ function renderDayPanel(dateStr, bets, refreshText = "") {
         <div class="day-hero__value ${good ? "is-good" : "is-bad"}">
           ${good ? "+" : "−"}${yen(Math.abs(profit))}
         </div>
-        <div class="day-hero__label">${good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
+        <div class="day-hero__label">${state._paper ? "仮の損益（賭けていません）"
+          : good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
       </div>
       <div class="stat-row">
         <div class="stat">
@@ -892,12 +916,13 @@ function renderPerf(container, pdca, perf) {
       html += `
         <section class="day-panel ${good ? "day-panel--good" : "day-panel--bad"}" style="margin-top:.7rem">
           <div class="day-panel__head">
-            <span class="day-panel__title">${W[_perfWindow]}の損益</span>
+            <span class="day-panel__title">${W[_perfWindow]}の${state._paper ? "仮の損益" : "損益"}</span>
             <span class="chip">${t.bets} 買い目</span>
           </div>
           <div class="day-hero">
             <div class="day-hero__value ${good ? "is-good" : "is-bad"}">${good ? "+" : "−"}¥${Math.abs(Math.round(t.profit || 0)).toLocaleString()}</div>
-            <div class="day-hero__label">${good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
+            <div class="day-hero__label">${state._paper ? "仮の損益（賭けていません）"
+              : good ? "▲ 損益（プラス）" : "▼ 損益（マイナス）"}</div>
           </div>
           <div class="stat-row">
             <div class="stat"><div class="stat__val">${pct(t.roi, 1)}</div><div class="stat__lab">回収率</div></div>

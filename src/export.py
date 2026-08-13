@@ -44,6 +44,19 @@ def live_since() -> str:
         return "1970-01-01"
 
 
+def paper_mode() -> bool:
+    """検証モードか。true の間は買い目を出すだけで実際には賭けない。
+
+    買い目の中身も記録も判定も変わらない。変わるのは画面の見せ方だけで、
+    表示される損益は「賭けていたらこうなった」という仮の数字になる。
+    """
+    from src.utils.helpers import load_config
+    try:
+        return bool(load_config().get("operation", {}).get("paper_mode", False))
+    except Exception:
+        return False
+
+
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -186,8 +199,13 @@ def export_meta(source: str = "local") -> None:
         existing = {}
     existing["last_refreshed"] = now_jst
     existing["source"] = source
+    # 検証モードかどうかを画面に伝える。買い目の中身は変わらないので、
+    # これが無いと「賭けるつもりの買い目」と見分けがつかない。
+    existing["paper_mode"] = paper_mode()
+    existing["live_since"] = live_since()
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=None), encoding="utf-8")
-    logger.info(f"export: meta.json (last_refreshed={now_jst})")
+    logger.info(f"export: meta.json (last_refreshed={now_jst}, "
+                f"paper_mode={existing['paper_mode']})")
 
 
 def export_probs(target_date: date) -> None:
