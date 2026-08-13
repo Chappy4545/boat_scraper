@@ -5,6 +5,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+from sqlalchemy import func as sa_func
+
 from src.ingestion.database import get_session, get_engine
 from src.ingestion.models import (
     Race, RaceEntry, Prediction, Bet, Stadium, BacktestResult, RaceResult,
@@ -15,6 +17,17 @@ logger = get_logger(__name__)
 
 DOCS_DIR = Path(__file__).parent.parent / "docs"
 DATA_DIR = DOCS_DIR / "data"
+
+# 損益に数えてよい買い目の条件。集計する箇所すべてで同じものを使う。
+#
+# date(created_at) <= race_date が要る理由:
+# _catchup_missed_results は取り逃した日に cmd_predict を走らせ直すため、
+# レースが終わったあとの確定オッズで買い目が生成されることがある。これは
+# 当日買えなかった買い目なので、混ぜると「賭けていない金」が損益に乗る。
+# 2026-08-13 時点で直近7日に 516 本・47万円ぶんが紛れ込み、実際は 55 本
+# なのに「1,189件・-358,310円」と表示されていた。
+BOUGHT = ("b.is_pass = 0 AND b.is_hit IS NOT NULL "
+          "AND date(b.created_at) <= r.race_date")
 
 
 def _ensure_data_dir():
@@ -104,7 +117,9 @@ def export_day(target_date: date) -> dict:
             session.query(Bet, Race, Stadium)
             .join(Race, Bet.race_id == Race.id)
             .join(Stadium, Race.stadium_id == Stadium.id)
-            .filter(Race.race_date == d, Bet.is_pass == False)
+            # レース後に生成された買い目は当日買えなかったので出さない（BOUGHT 参照）
+            .filter(Race.race_date == d, Bet.is_pass == False,
+                    sa_func.date(Bet.created_at) <= Race.race_date)
             .order_by(Race.race_no, Bet.expected_value.desc())
             .all()
         )
@@ -213,7 +228,15 @@ def export_performance() -> None:
     from sqlalchemy import text as sa_text
 
     with get_session() as session:
-        all_bets = session.query(Bet).filter(Bet.is_pass == False).all()
+        # レース後に生成された買い目を除く（BOUGHT と同じ条件）。
+        # これを入れないと全期間の収支に「賭けていない金」が乗る。
+        all_bets = (
+            session.query(Bet)
+            .join(Race, Bet.race_id == Race.id)
+            .filter(Bet.is_pass == False,
+                    sa_func.date(Bet.created_at) <= Race.race_date)
+            .all()
+        )
         settled = [b for b in all_bets if b.is_hit is not None]
         hits = sum(1 for b in settled if b.is_hit)
         invested = sum(b.recommended_amount or 0 for b in settled)
@@ -244,7 +267,7 @@ def export_performance() -> None:
     # 日別実績（直近90日・判定済みのみ）
     engine = get_engine()
     with engine.connect() as conn:
-        rows = conn.execute(sa_text("""
+        rows = conn.execute(sa_text(f"""
             SELECT r.race_date,
                    COUNT(*) AS total_bets,
                    SUM(CASE WHEN b.is_hit = 1 THEN 1 ELSE 0 END) AS hits,
@@ -252,7 +275,7 @@ def export_performance() -> None:
                    SUM(CASE WHEN b.is_hit = 1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
             FROM bets b
             JOIN races r ON b.race_id = r.id
-            WHERE b.is_pass = 0 AND b.is_hit IS NOT NULL
+            WHERE {BOUGHT}
             GROUP BY r.race_date
             ORDER BY r.race_date DESC
             LIMIT 90
@@ -330,7 +353,7 @@ def export_pdca() -> None:
                    SUM(b.recommended_amount) AS invested,
                    SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
             FROM bets b JOIN races r ON b.race_id=r.id
-            WHERE b.is_pass=0 AND b.is_hit IS NOT NULL {where_date}
+            WHERE {BOUGHT} {where_date}
             GROUP BY b.bet_type
         """
         with engine.connect() as conn:
@@ -349,7 +372,7 @@ def export_pdca() -> None:
     }
 
     # band_hit_rates (直近30日)
-    band_sql = """
+    band_sql = f"""
         SELECT b.bet_type,
                CASE
                  WHEN b.model_prob < 0.03 THEN 1
@@ -369,7 +392,7 @@ def export_pdca() -> None:
                SUM(b.recommended_amount) AS invested,
                SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END) AS returned
         FROM bets b JOIN races r ON b.race_id=r.id
-        WHERE b.is_pass=0 AND b.is_hit IS NOT NULL AND r.race_date >= date('now','-30 days')
+        WHERE {BOUGHT} AND r.race_date >= date('now','-30 days')
         GROUP BY b.bet_type, band_idx ORDER BY b.bet_type, band_idx
     """
     band_labels = {1:"0-3%",2:"3-5%",3:"5-7%",4:"7-10%",5:"10-15%",6:"15-20%",7:"20-30%",8:"30-50%",9:"50%+"}
@@ -407,12 +430,12 @@ def export_pdca() -> None:
         for i, entry in enumerate(table):
             target = round(entry["hit_rate"], 6)
             # calibrated値がtargetに近いbetを集計 (許容誤差0.0005)
-            sql = """
+            sql = f"""
                 SELECT COUNT(*), SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END),
                        SUM(b.recommended_amount),
                        SUM(CASE WHEN b.is_hit=1 THEN CAST(b.recommended_amount * b.actual_payout / 100 AS INTEGER) ELSE 0 END)
                 FROM bets b JOIN races r ON b.race_id=r.id
-                WHERE b.is_pass=0 AND b.is_hit IS NOT NULL
+                WHERE {BOUGHT}
                   AND b.bet_type=:bt
                   AND ABS(b.model_prob - :tgt) < 0.0005
                   AND r.race_date >= date('now','-30 days')
@@ -438,7 +461,7 @@ def export_pdca() -> None:
             })
 
     # daily × bet_type (直近90日)
-    daily_sql = """
+    daily_sql = f"""
         SELECT r.race_date, b.bet_type,
                COUNT(*) AS bets,
                SUM(CASE WHEN b.is_hit=1 THEN 1 ELSE 0 END) AS hits,
@@ -449,7 +472,7 @@ def export_pdca() -> None:
         -- 集計されていた。2026-08-11 時点で 8/1以降が全て未判定だったため、
         -- 日次・累積損益が -500万円という実在しない数字になっていた。
         -- 他の集計(windows / band_hit_rates)には元から入っている条件。
-        WHERE b.is_pass=0 AND b.is_hit IS NOT NULL
+        WHERE {BOUGHT}
         GROUP BY r.race_date, b.bet_type
         HAVING r.race_date >= date('now','-90 days')
         ORDER BY r.race_date DESC, b.bet_type
