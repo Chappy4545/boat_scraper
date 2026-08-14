@@ -26,6 +26,13 @@ from sqlalchemy import text                     # noqa: E402
 from src.ingestion.database import get_engine, init_db   # noqa: E402
 from src.utils.helpers import load_config       # noqa: E402
 
+# バッチからは cp932 のログにリダイレクトされる。絵文字を出すと
+# UnicodeEncodeError で落ち、点検そのものが動かない（2026-08-14 に発生）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 JST = timezone(timedelta(hours=9))
 DATA = Path(__file__).resolve().parent.parent / "docs" / "data"
 CANDIDATE_REASON = "候補ルール(混合)"
@@ -144,7 +151,7 @@ def main() -> None:
     (DATA / "health.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
 
     if ng:
-        print(f"\n⚠ 異常 {len(ng)}件: {', '.join(n for n, _, _ in ng)}")
+        print(f"\n[!] 異常 {len(ng)}件: {', '.join(n for n, _, _ in ng)}")
         sys.exit(1)
     print("\nすべて正常")
 

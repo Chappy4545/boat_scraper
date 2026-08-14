@@ -10,12 +10,18 @@ REM (it tries to open the Store and returns exit code 1).
 set "PY=C:\Users\kcs15\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 if not exist "%PY%" set "PY=C:\Users\kcs15\AppData\Local\Python\bin\python.exe"
 
+REM Capture the date at launch and pass it explicitly.
+REM The machine sleeps mid-run: on 2026-08-14 the judge started at
+REM 23:45 and its python did not get going until 08:00 the next day,
+REM so date.today() collected the wrong day and 08-13 was left empty.
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "RUNDATE=%%i"
+
 if not exist "logs" mkdir "logs"
 set "LOG=logs\task_judge.log"
 echo [%date% %time%] JUDGE start >> "%LOG%"
 
-"%PY%" main.py collect_results >> "%LOG%" 2>&1
-"%PY%" main.py judge >> "%LOG%" 2>&1
+"%PY%" main.py collect_results %RUNDATE% >> "%LOG%" 2>&1
+"%PY%" main.py judge %RUNDATE% >> "%LOG%" 2>&1
 if errorlevel 1 (
     echo [%date% %time%] JUDGE failed >> "%LOG%"
     exit /b 1
@@ -27,7 +33,7 @@ REM Warn only when results fall below the statistical threshold.
 REM One screen a day: did everything run, and is the evidence accruing.
 REM Every failure so far has been silent, so the result also goes to
 REM docs/data/health.json and the app raises it when something is off.
-"%PY%" scripts\daily_check.py >> "%LOG%" 2>&1
+"%PY%" scripts\daily_check.py %RUNDATE% >> "%LOG%" 2>&1
 
 git add docs/data/
 git diff --cached --quiet || git commit -m "auto: judge results %date%"

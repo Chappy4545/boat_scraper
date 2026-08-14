@@ -240,6 +240,31 @@ def cmd_collect_range(date_from: str, date_to: str,
     _purge_raw_cache(config)
 
 
+def keep_awake() -> None:
+    """実行中はPCを寝かせない（Windows のみ）。
+
+    2026-08-14、朝の更新が 08:06 に始まったスリープで 184 分止まり、
+    復帰と同時に強制終了された。前夜の判定も 22:30 に起動したあと寝て、
+    08:00 に目を覚まし「翌日」を収集していた。
+
+    タスクスケジューラの電源設定（バッテリー時に実行しない等）は 08-11 に
+    直したが、あれは「開始できるか」の話で、走っている最中に寝るのは防げない。
+    実行中だけ ES_SYSTEM_REQUIRED を立てて抑止する。画面は消えてよいので
+    ES_DISPLAY_REQUIRED は立てない。プロセスが終われば自動で解除される。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        r = ctypes.windll.kernel32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        logger.info("スリープ抑止: " + ("有効" if r else "失敗"))
+    except Exception as e:
+        logger.warning(f"スリープ抑止を設定できません: {e}")
+
+
 def cmd_train(date_from: str | None = None, date_to: str | None = None):
     from src.features.builder import build_features
     from src.models.trainer import train_all, train_ranker
@@ -400,6 +425,7 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import init_db
     from src.ingestion.saver import save_day
+    keep_awake()
     config = load_config()
     init_db(config)
     d = target_date or date.today()
@@ -972,6 +998,7 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
     直前情報はスキップし、全場の全レースを一括処理する。
     """
     import subprocess
+    keep_awake()
     d = target_date or date.today()
     logger.info(f"=== UPDATE 開始: {d} ===")
     cmd_collect(d, max_workers=max_workers, skip_before_info=True)

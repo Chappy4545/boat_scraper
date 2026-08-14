@@ -10,11 +10,17 @@ REM (it tries to open the Store and returns exit code 1).
 set "PY=C:\Users\kcs15\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 if not exist "%PY%" set "PY=C:\Users\kcs15\AppData\Local\Python\bin\python.exe"
 
+REM Capture the date at launch and pass it explicitly.
+REM The machine sleeps mid-run: on 2026-08-14 the judge started at
+REM 23:45 and its python did not get going until 08:00 the next day,
+REM so date.today() collected the wrong day and 08-13 was left empty.
+for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "RUNDATE=%%i"
+
 if not exist "logs" mkdir "logs"
 set "LOG=logs\task_update.log"
 echo [%date% %time%] UPDATE start >> "%LOG%"
 
-"%PY%" main.py update >> "%LOG%" 2>&1
+"%PY%" main.py update %RUNDATE% >> "%LOG%" 2>&1
 if errorlevel 1 (
     echo [%date% %time%] UPDATE failed >> "%LOG%"
     exit /b 1
