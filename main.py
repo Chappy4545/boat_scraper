@@ -75,10 +75,6 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5,
     logger.info(f"データ収集完了: {summary}")
     _purge_raw_cache(config)
 
-    # 今日の収集時のみ、直近7日の未取得結果をキャッチアップ
-    if target_date is None or target_date == date.today():
-        _catchup_missed_results(max_workers=max_workers)
-
 
 def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
     """直近N日のうち、データが欠けている日をまとめて収集・判定する。
@@ -1002,8 +998,15 @@ def cmd_update(target_date: date | None = None, max_workers: int = 5):
     d = target_date or date.today()
     logger.info(f"=== UPDATE 開始: {d} ===")
     cmd_collect(d, max_workers=max_workers, skip_before_info=True)
+    # 今日の買い目を先に作る。過去日の穴埋めより優先する。
+    # キャッチアップを収集の中でやっていたため、2026-08-14 は 8/13 の
+    # 取り直し（約1,100リクエスト）が終わるまで当日の予測が始まらず、
+    # レースが始まっても買い目が出なかった。過去日は急がない。
     cmd_predict(d)
     logger.info(f"=== UPDATE 完了: {d} ===")
+
+    if target_date is None or target_date == date.today():
+        _catchup_missed_results(max_workers=max_workers)
 
     # docs/data/ を自動的に git push
     try:
