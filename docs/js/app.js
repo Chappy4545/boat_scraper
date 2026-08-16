@@ -280,12 +280,20 @@ function renderHealthBanner(isToday, bets, races, meta) {
 
   // 検証モードは日付に関係なく常に出す。買い目の見た目は今までと同じなので、
   // これが無いと「買うつもりの買い目」と区別がつかない。
-  // 前夜のデイリーチェックで引っかかった項目。異常時だけ出す。
+  // デイリーチェックで引っかかった項目。異常時だけ出す。
+  // いつ点検した結果かを必ず書く。夜の判定だけでなく手で回すこともあり、
+  // 「昨夜の点検」と決め打ちすると、収集途中の記録を夜の結果として
+  // 見せてしまう（2026-08-16 に発生）。
   const h = state._health;
   if (h && h.ng && h.ng.length) {
+    const t = h.checked_at
+      ? new Date(h.checked_at).toLocaleString("ja-JP",
+          { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : h.date;
     parts.push(healthAlert(
-      `昨夜の点検で ${h.ng.length} 件の異常`,
-      `${h.ng.join(" / ")} が想定どおりに動いていません（${h.date} 分）。`
+      `点検で ${h.ng.length} 件の異常（${t} 時点）`,
+      `${h.date} 分の ${h.ng.join(" / ")} が想定どおりに動いていません。` +
+      `その後に解消している場合もあります。`
     ));
   }
 

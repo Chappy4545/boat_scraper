@@ -54,7 +54,12 @@ def main() -> None:
 
     with get_engine().connect() as conn:
         races = q1(conn, "SELECT COUNT(*) FROM races WHERE race_date=:d", d=str(d))
-        checks.append(("レース取得", races > 0, f"{races}レース"))
+        # 朝の更新が終わる前は 0 レースで当たり前。開催が始まる 10 時を
+        # 過ぎてから異常とみなす。ここを無条件にしていたため、収集中に
+        # 手で点検を回した記録が残り、解消後も画面が警告し続けた。
+        collected_yet = now.date() > d or now.hour >= 10
+        checks.append(("レース取得", (not collected_yet) or races > 0,
+                       f"{races}レース" + ("（収集前）" if not races and not collected_yet else "")))
 
         bets = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
                            WHERE r.race_date=:d AND b.is_pass=0""", d=str(d))

@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v10";
+const CACHE_NAME = "boatrace-v11";
 
 // v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
 //     開けず、PWA として成立していなかった。addAll は1件でも失敗すると
@@ -11,6 +11,7 @@ const CACHE_NAME = "boatrace-v10";
 //     「買うつもりの買い目」と区別がつかないので、確実に配る。
 // v9: 検証中の候補ルールを買い目一覧から分離（件数だけ表示）。
 // v10: 前夜のデイリーチェック結果を読んで、異常時だけ知らせる。
+// v11: その警告に点検時刻を出す（いつ時点の話か分からなかった）。
 const STATIC_ASSETS = [
   "./",
   "index.html",
