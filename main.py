@@ -246,13 +246,17 @@ def keep_awake() -> None:
     タスクスケジューラの電源設定（バッテリー時に実行しない等）は 08-11 に
     直したが、あれは「開始できるか」の話で、走っている最中に寝るのは防げない。
 
-    このPCは S0 低電力アイドル（Modern Standby）で、そこでは
-    ES_SYSTEM_REQUIRED が無視される。08-15 は「抑止 有効」と記録された
-    直後の 08:06 から 48 分寝ており、宣言が通っても効いていなかった。
-    Modern Standby は画面が消えた時点で入るので、ES_DISPLAY_REQUIRED まで
-    立てて画面を保たせる。サービス以外のプロセスに他の手段はない。
-    朝の収集で 20 分ほど画面が点いたままになるが、その代償は払う。
-    プロセスが終われば自動で解除される。
+    ただしこのPCは S0 低電力アイドル（Modern Standby）で、そこでは
+    この宣言が効かない。実測:
+        08-15 ES_SYSTEM_REQUIRED のみ  → 08:06 から 48 分停止
+        08-16 ES_DISPLAY_REQUIRED 追加 → 08:07 から 52 分停止
+    どちらも「抑止 有効」と記録された直後に寝ている。サービス以外の
+    プロセスが Modern Standby を止める手段は無い（それができる
+    PowerRequestExecutionRequired はサービス専用）。
+
+    実際の原因はバッテリー時のスリープが 3 分だったこと。そちらを
+    延ばして解決した（電源プラン側の設定。SUB_SLEEP STANDBYIDLE）。
+    この関数は S3 スリープの機種で効くので残すが、これだけに頼らない。
     """
     if sys.platform != "win32":
         return
@@ -260,9 +264,8 @@ def keep_awake() -> None:
         import ctypes
         ES_CONTINUOUS = 0x80000000
         ES_SYSTEM_REQUIRED = 0x00000001
-        ES_DISPLAY_REQUIRED = 0x00000002
         r = ctypes.windll.kernel32.SetThreadExecutionState(
-            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
         logger.info("スリープ抑止: " + ("有効" if r else "失敗"))
     except Exception as e:
         logger.warning(f"スリープ抑止を設定できません: {e}")

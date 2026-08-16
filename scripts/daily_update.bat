@@ -16,12 +16,27 @@ REM 23:45 and its python did not get going until 08:00 the next day,
 REM so date.today() collected the wrong day and 08-13 was left empty.
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "RUNDATE=%%i"
 
+REM Battery sleep on this machine is 3 minutes, and it only offers S0
+REM Low Power Idle, where SetThreadExecutionState has no effect -- the
+REM run was being suspended about 7 minutes in, every day. Hold sleep
+REM off for the length of the run and put the old value back after.
+set "OLDSLEEP=180"
+for /f %%v in ('powershell -NoProfile -Command "[Convert]::ToInt32((((powercfg /q SCHEME_CURRENT SUB_SLEEP STANDBYIDLE) -match 'DC')[0] -split ':')[1].Trim(),16)"') do set "OLDSLEEP=%%v"
+REM If a previous run died before restoring, the captured value is our
+REM own hold. Fall back to the machine default rather than making it stick.
+if "%OLDSLEEP%"=="2700" set "OLDSLEEP=180"
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE 2700 >nul 2>&1
+powercfg /setactive SCHEME_CURRENT >nul 2>&1
+
 if not exist "logs" mkdir "logs"
 set "LOG=logs\task_update.log"
 echo [%date% %time%] UPDATE start >> "%LOG%"
 
 "%PY%" main.py update %RUNDATE% >> "%LOG%" 2>&1
-if errorlevel 1 (
+set "RC=%ERRORLEVEL%"
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE %OLDSLEEP% >nul 2>&1
+powercfg /setactive SCHEME_CURRENT >nul 2>&1
+if not "%RC%"=="0" (
     echo [%date% %time%] UPDATE failed >> "%LOG%"
     exit /b 1
 )
