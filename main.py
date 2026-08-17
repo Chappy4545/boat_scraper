@@ -156,7 +156,23 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
                 data = scraper.collect_day(d, max_workers=max_workers)
             save_day(data)
             logger.info(f"  キャッチアップ完了: {d}")
-            cmd_predict(d)
+            # その日のうちに作った予測が残っているなら、作り直さない。
+            # cmd_predict は既存の買い目を消して入れ直し、probs_<日付>.json
+            # も上書きする。2026-08-17 の復旧で 08-16 の朝の予測（690件と
+            # probs ファイル）が今日づけの再予測で消えた。
+            # レース後に作り直した買い目は、オッズが確定した状態で選ぶことに
+            # なるので損益の集計から外れる（BOUGHT の created_at 条件）。
+            # つまり作り直すと、その日の記録が丸ごと検証に使えなくなる。
+            # 丸ごと取り逃した日（予測が1件も無い日）だけ新規に作る。
+            with engine.connect() as conn:
+                same_day = conn.execute(sa_text(
+                    "SELECT COUNT(*) FROM bets b JOIN races r ON r.id = b.race_id "
+                    "WHERE r.race_date = :d AND date(b.created_at) <= r.race_date"
+                ), {"d": str(d)}).scalar()
+            if same_day:
+                logger.info(f"  予測は当日のものを残す: {d} ({same_day}件)")
+            else:
+                cmd_predict(d)
             cmd_judge(d)
         except Exception as e:
             logger.error(f"  キャッチアップ失敗 {d}: {e}")

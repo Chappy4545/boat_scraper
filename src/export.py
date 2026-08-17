@@ -181,6 +181,22 @@ def export_day(target_date: date) -> dict:
     races_path = DATA_DIR / f"races_{date_str}.json"
     bets_path = DATA_DIR / f"bets_{date_str}.json"
     races_path.write_text(json.dumps(races_json, ensure_ascii=False, indent=None), encoding="utf-8")
+
+    # 中身のある記録を空で潰さない。
+    # 2026-08-17 のキャッチアップが 08-16 を再予測し、その買い目が翌日づけに
+    # なった結果 BOUGHT の条件から外れ、ここが 0 件を書いて「16本・的中3本」
+    # という実績が消えた。DB 側の都合で消えてよい記録ではない。
+    if not bets_json and bets_path.exists():
+        try:
+            existing = json.loads(bets_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
+        if existing:
+            logger.warning(
+                f"export: {bets_path.name} は 0 件になるため書き換えません"
+                f"（既存 {len(existing)}件を保持）")
+            return {"races": len(races_json), "bets": len(existing)}
+
     bets_path.write_text(json.dumps(bets_json, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(f"export: {races_path.name} ({len(races_json)}件), {bets_path.name} ({len(bets_json)}件)")
     return {"races": len(races_json), "bets": len(bets_json)}
