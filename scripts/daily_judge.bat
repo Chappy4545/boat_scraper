@@ -10,11 +10,12 @@ REM (it tries to open the Store and returns exit code 1).
 set "PY=C:\Users\kcs15\AppData\Local\Python\pythoncore-3.14-64\python.exe"
 if not exist "%PY%" set "PY=C:\Users\kcs15\AppData\Local\Python\bin\python.exe"
 
-REM Capture the date at launch and pass it explicitly.
-REM The machine sleeps mid-run: on 2026-08-14 the judge started at
-REM 23:45 and its python did not get going until 08:00 the next day,
-REM so date.today() collected the wrong day and 08-13 was left empty.
-for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "RUNDATE=%%i"
+REM Judge the racing day that has just finished, not the calendar day.
+REM This runs at 22:30, but a missed trigger fires whenever the machine
+REM next wakes -- on 2026-08-17 the 08-16 run started at 09:44 and
+REM judged 08-17, a day whose races had barely begun, leaving 08-16
+REM unjudged again. Before noon the finished day is yesterday.
+for /f %%i in ('powershell -NoProfile -Command "$d=Get-Date; if($d.Hour -lt 12){$d=$d.AddDays(-1)}; Get-Date $d -Format yyyy-MM-dd"') do set "RUNDATE=%%i"
 
 REM Battery sleep on this machine is 3 minutes, and it only offers S0
 REM Low Power Idle, where SetThreadExecutionState has no effect -- the
