@@ -193,7 +193,24 @@ def generate_bets(
             [True, f"買い目数上限({max_bets}本)超過"]
 
     if cands_df[~cands_df["is_pass"]].empty:
-        return _pass_df("全買い目が見送り条件に該当")
+        # 1本も買わないレースでも、検証中の候補ルールが使う賭式の行は残す。
+        #
+        # ここで全部を1行に畳むと組合せごとの model_prob が消え、そのレースは
+        # probs_<日付>.json から丸ごと落ちる。候補ルール(operation.candidate_rule)は
+        # クラウド側でそのファイルだけを見て動くので、落ちたレースは永久に
+        # 評価されない。既存ルールの足切り（大穴除外・EV・min_model_prob）は
+        # 候補ルールとは無関係なのに、候補ルールを道連れにしていた。
+        #   2026-08-17 実測: 168レース中132レースがこれで消え、probs は
+        #   36レース分しかなかった。1日6.6本の想定に対し候補は5日で1本。
+        # 買う・買わないは is_pass で区別されるので、残しても損益には入らない。
+        _cand = (config.get("operation") or {}).get("candidate_rule") or {}
+        keep_bt = bt_to_db_name.get(_cand.get("bet_type", ""))
+        kept = cands_df[cands_df["bet_type"] == keep_bt] if keep_bt else cands_df.iloc[:0]
+        if kept.empty:
+            return _pass_df("全買い目が見送り条件に該当")
+        kept = kept.copy()
+        kept["model_version"] = model_version
+        return kept
 
     cands_df["model_version"] = model_version
     return cands_df

@@ -65,6 +65,19 @@ def main() -> None:
                            WHERE r.race_date=:d AND b.is_pass=0""", d=str(d))
         checks.append(("買い目生成", races == 0 or bets > 0, f"{bets}本"))
 
+        # 組合せごとの model_prob が残っているレースの割合。
+        # 1本も買わないレースを1行に畳むと probs_<日付>.json からレースごと
+        # 落ち、クラウドの refresh_odds がそのレースを一切見られない。
+        # 静かに効くので気づけなかった: 08-17 は 36/168、08-18 は 9/144 しか
+        # 対象になっておらず、候補ルールが5日で1本しか貯まらなかった。
+        scored = q1(conn, """SELECT COUNT(DISTINCT r.id) FROM races r
+                             WHERE r.race_date=:d AND EXISTS
+                             (SELECT 1 FROM bets b WHERE b.race_id=r.id
+                                AND b.model_prob IS NOT NULL)""", d=str(d))
+        checks.append(("予測対象", races == 0 or scored / races >= 0.90,
+                       f"{scored}/{races}レース"
+                       + (f" ({scored / races * 100:.0f}%)" if races else "")))
+
         done = q1(conn, """SELECT COUNT(DISTINCT r.id) FROM races r
                            WHERE r.race_date=:d AND EXISTS
                            (SELECT 1 FROM race_results rr WHERE rr.race_id=r.id)""", d=str(d))

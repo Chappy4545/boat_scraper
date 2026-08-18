@@ -32,6 +32,16 @@ if not exist "logs" mkdir "logs"
 set "LOG=logs\task_update.log"
 echo [%date% %time%] UPDATE start >> "%LOG%"
 
+REM A judge that missed its 22:30 trigger runs the moment the machine wakes,
+REM which is the same second this task starts (2026-08-18: both at 8:00:06).
+REM They share one SQLite file and both rebase/push, so let the judge finish
+REM first -- it takes 5 minutes and yesterday belongs before today anyway.
+REM Relative path on purpose: we already cd'd to the repo root, and handing
+REM powershell.exe the absolute path fails -- it runs through the cp932 command
+REM line and the Japanese directory name comes out mangled (verified today).
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\wait_for_judge.ps1" -MaxWaitMin 30 >> "%LOG%" 2>&1
+if errorlevel 1 echo [%date% %time%] judge still running after 30 min - going ahead >> "%LOG%"
+
 "%PY%" main.py update %RUNDATE% >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE %OLDSLEEP% >nul 2>&1

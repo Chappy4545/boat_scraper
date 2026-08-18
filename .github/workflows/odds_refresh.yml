@@ -20,7 +20,9 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 2026-08-18: probs に載るレースが 9〜36 から全レース(140-190)に増えた。
+    # 1レースあたり2ページ・5並列で 2〜3 分かかるので、10分では際どい。
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
