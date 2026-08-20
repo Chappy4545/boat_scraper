@@ -122,6 +122,9 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
                   FROM bets b JOIN races r ON r.id = b.race_id
                  WHERE r.race_date = :d AND b.is_pass = 0 AND b.is_hit IS NULL
                  GROUP BY has_result"""), {"d": str(d)}).all())
+            bet_cnt = conn.execute(sa_text(
+                "SELECT COUNT(*) FROM bets b JOIN races r ON r.id = b.race_id "
+                "WHERE r.race_date = :d"), {"d": str(d)}).scalar()
         judgeable = unjudged.get(1, 0)   # 着順あり → 判定を流すだけでよい
         missing   = unjudged.get(0, 0)   # 着順なし → 取りに行かないと判定できない
 
@@ -134,6 +137,14 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
             # しか見ておらず、一部だけ欠けた日は永久に取り残されていた
             # （2026-08-11 の 5 レース分が2日間判定されないままだった）。
             # 中止レースは着順が永久に来ないので、再収集は直近数日に限る。
+            targets.append(d)
+        elif bet_cnt == 0 and i <= recollect_days:
+            # レースは取れたのに予測が一度も走らなかった日。
+            # 上の分類は「未判定の買い目」を数えるので、買い目が1件も無い日は
+            # missing も judgeable も 0 になり、どの枝にも入らず静かに残る。
+            # 2026-08-19 がこれ: 朝の更新が起動4秒後に休止で凍結され、
+            # レース144件・結果48件・買い目0件のまま翌朝まで放置された。
+            # 「レースがある＝収集は動いた」ので race_cnt==0 にも該当しない。
             targets.append(d)
         elif judgeable:
             # 着順は揃っているのに未判定＝判定だけ落ちた日。取得は要らない。
