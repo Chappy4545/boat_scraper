@@ -1,4 +1,4 @@
-# データベース（大容量のためgit管理外）
+﻿# データベース（大容量のためgit管理外）
 data/boatrace.db
 
 # キャッシュ・一時ファイル
@@ -52,3 +52,4 @@ scratch_*
 # クラウド予測が使う当日ぶんの使い捨てDB（コミットしない）
 cloud_scratch.db
 data/cloud_*.db
+data/processed/models_start_*/
