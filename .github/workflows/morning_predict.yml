@@ -70,16 +70,33 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # 当日ぶんのファイルだけ。performance.json と pdca.json は履歴DBが
           # 要るのでローカルが書く。使い捨てDBから上書きさせない。
+          # 退避したオッズも残す。使い捨てDBは消えるうえ、オッズは過去日に
+          # 遡って取得できないので、ここで push しないと永久に失われる。
           git add docs/data/races_*.json docs/data/probs_*.json \
-                  docs/data/bets_*.json docs/data/meta.json
+                  docs/data/bets_*.json docs/data/meta.json \
+                  docs/data/odds_raw_*.json.gz
           if git diff --cached --quiet; then
             echo "変更なし"
-          else
-            git commit -m "auto: morning predict $(TZ=Asia/Tokyo date +%Y-%m-%d)"
-            if git pull --rebase -X ours origin master; then
-              git push
-            else
-              git rebase --abort
-              echo "rebase conflict - skip push"
-            fi
+            exit 0
           fi
+          git commit -m "auto: morning predict $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+
+          # odds_refresh が15分ごとに同じディレクトリへ push している。
+          # 初回はこれと衝突して失敗した（2026-08-21 の手動実行 #1）。
+          # 数回やり直す。rebase --abort は「途中でない」と非0を返すので、
+          # そこで step 全体が落ちないよう || true を付ける。
+          for i in 1 2 3 4 5; do
+            git fetch origin master
+            if git rebase -X ours origin/master; then
+              if git push; then
+                echo "push 成功 (試行 $i)"
+                exit 0
+              fi
+            else
+              git rebase --abort || true
+            fi
+            echo "衝突または push 失敗。10秒後に再試行 ($i/5)"
+            sleep 10
+          done
+          echo "5回試して push できなかった" >&2
+          exit 1
