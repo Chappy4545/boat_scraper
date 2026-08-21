@@ -773,6 +773,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     """
     import json
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    import gzip
     from datetime import datetime, timezone, timedelta
     from pathlib import Path
 
@@ -1000,15 +1001,35 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         candidates = candidates[:max_bets]
         for c in candidates:
             del c["_ev"]
-        return race_id, candidates, blend_picks
+
+        # 締切間際の板をまるごと残す。ここでしか取れない。
+        #
+        # EV は観測オッズで計算しているが、pari-mutuel なので払戻は確定プールで
+        # 決まる。観測値は確定値の推定でしかなく、極端なほど行き過ぎている
+        # （2026-08-21 実測: log(確定)=1.671+0.486*log(朝の板)、傾きが0.5弱）。
+        # EV で選ぶ＝オッズが高いものを選ぶ以上、構造的に「これから下がる側」を
+        # 拾う。縮小してから EV を計算すれば直せるはずだが、その係数を推定するには
+        # 「締切前の板」と「確定オッズ」の対データが要る。
+        #
+        # 朝の板では足りない（R^2=0.12、確定オッズをほとんど説明できない）。
+        # 必要なのは実際に買い目を固定する時点＝締切間際の板で、そこは今まで
+        # ルールが選んだ組合せしか残っていなかった（選択バイアス付きで84件）。
+        # ここでは全組合せを取得済みなので、捨てずに残せばよい。
+        board = [{"bet_type": bt, "combination": cb, "odds": float(o)}
+                 for (bt, cb), o in odds_lookup.items()
+                 if o and not pd.isna(o) and o > 0]
+        return race_id, candidates, blend_picks, board
 
     new_bets: list[dict] = []
+    boards: dict[int, list] = {}      # 締切間際の板（race_id -> 全組合せ）
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(fetch_race_odds, rid): rid for rid in probs_by_race}
         for future in as_completed(futures):
             rid = futures[future]
             try:
-                race_id, race_bets, race_blend = future.result()
+                race_id, race_bets, race_blend, race_board = future.result()
+                if race_id in finalize_race_ids and race_board:
+                    boards[race_id] = race_board
                 meta = race_meta.get(race_id, {})
                 common = {
                     "bet_id": None,
@@ -1041,6 +1062,42 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     n_final = sum(1 for b in all_bets if b.get("is_final_pick"))
     n_blend = sum(1 for b in all_bets if b.get("rule") == "market_blend")
     bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
+
+    # 締切間際の板を日付ごとのファイルに貯める。1レース1回だけ書き、
+    # 既にあるレースは上書きしない（最初に確定した時点の板が「買える値」）。
+    # 15分ごとの全スナップショットを残すとリポジトリが太るので、確定した
+    # レースだけに絞る。用途は observed→settled の縮小係数の推定。
+    if boards:
+        board_path = docs_data / f"board_{d}.json.gz"
+        existing: dict = {}
+        if board_path.exists():
+            try:
+                existing = json.loads(gzip.decompress(board_path.read_bytes()).decode("utf-8"))
+            except Exception as e:
+                logger.warning(f"board 読み込み失敗（作り直します）: {e}")
+                existing = {}
+        races_in = existing.setdefault("races", {})
+        added = 0
+        for rid, rows in boards.items():
+            if str(rid) in races_in:
+                continue
+            meta = race_meta.get(rid, {})
+            races_in[str(rid)] = {
+                "stadium": meta.get("stadium", ""),
+                "race_no": meta.get("race_no"),
+                "closing_time": meta.get("closing_time"),
+                "captured_at": now_jst.isoformat(),
+                "odds": rows,
+            }
+            added += 1
+        if added:
+            existing["date"] = str(d)
+            blob = json.dumps(existing, ensure_ascii=False).encode("utf-8")
+            board_path.write_bytes(gzip.compress(blob, 9))
+            logger.info(f"締切前の板を保存: {board_path.name} "
+                        f"(+{added}レース / 累計{len(races_in)}レース / "
+                        f"{board_path.stat().st_size/1e6:.2f} MB)")
+
     logger.info(
         f"refresh_odds完了: 保持={len(keep_bets)}件 更新={len(new_bets)}件 "
         f"（確定済み合計={n_final}件 / 候補ルール={n_blend}件）"

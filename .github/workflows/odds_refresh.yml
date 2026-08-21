@@ -65,7 +65,10 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # 以前は bets_*.json を checkout で破棄していたため、オッズ更新も
           # 結果判定も PWA に反映されていなかった。両方とも commit する。
-          git add docs/data/bets_*.json docs/data/meta.json
+          # board_*.json.gz は締切間際の板（全組合せ）。ここでしか取れず、
+          # オッズは遡及取得もできない。観測オッズ→確定オッズの縮小係数を
+          # 推定するのに要る（main.py の該当箇所の説明を参照）。
+          git add docs/data/bets_*.json docs/data/meta.json docs/data/board_*.json.gz
           if git diff --cached --quiet; then
             echo "変更なし — スキップ"
           else
