@@ -45,61 +45,11 @@ class Stadium(Base):
     races = relationship("Race", back_populates="stadium")
 
 
-class RacerMaster(Base):
-    """レーサーマスタ（期別成績含む）"""
-    __tablename__ = "racer_master"
-
-    id = Column(Integer, primary_key=True)
-    racer_no = Column(Integer, unique=True, nullable=False)
-    name = Column(String(20))
-    branch = Column(String(10))         # 支部
-    birth_place = Column(String(10))    # 出身地
-    age = Column(Integer)
-    weight = Column(Float)
-    height = Column(Float)
-    racer_class = Column(String(5))     # A1/A2/B1/B2
-    # 全国成績
-    national_win_rate = Column(Float)
-    national_top2_rate = Column(Float)
-    national_top3_rate = Column(Float)
-    # 当地成績
-    local_win_rate = Column(Float)
-    local_top2_rate = Column(Float)
-    local_top3_rate = Column(Float)
-    f_count = Column(Integer, default=0)    # フライング数
-    l_count = Column(Integer, default=0)    # 出遅れ数
-    avg_st = Column(Float)                  # 平均スタートタイム
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class Motor(Base):
-    """モーターマスタ"""
-    __tablename__ = "motors"
-
-    id = Column(Integer, primary_key=True)
-    motor_no = Column(Integer, nullable=False)
-    stadium_id = Column(Integer, ForeignKey("stadiums.id"), nullable=False)
-    season_year = Column(Integer)       # 使用年度
-    top2_rate = Column(Float)
-    top3_rate = Column(Float)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    __table_args__ = (UniqueConstraint("motor_no", "stadium_id", "season_year"),)
-
-
-class Boat(Base):
-    """ボートマスタ"""
-    __tablename__ = "boats"
-
-    id = Column(Integer, primary_key=True)
-    boat_no = Column(Integer, nullable=False)
-    stadium_id = Column(Integer, ForeignKey("stadiums.id"), nullable=False)
-    season_year = Column(Integer)
-    top2_rate = Column(Float)
-    top3_rate = Column(Float)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    __table_args__ = (UniqueConstraint("boat_no", "stadium_id", "season_year"),)
+# 2026-08-21 に RacerMaster / Motor / Boat を削除した。
+# 3テーブルとも作られてから一度も書き込まれておらず（全部0行）、
+# 定義以外にコード上の参照も無かった。選手・モーター・ボートの成績は
+# 出走表ページに印刷されており、race_entries に入っている。
+# マスタとして別に持つ設計だったが、そちらは使われないまま残っていた。
 
 
 class Race(Base):
