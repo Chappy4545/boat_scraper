@@ -1,0 +1,85 @@
+name: Morning Predict
+
+# 朝の買い目をクラウドで作る。
+#
+# これまでは 08:00 JST にローカルPCのタスクが収集→予測→push していた。
+# だがPCはユーザーが電源を入れるまで休止しており、9日のうち定刻に走ったのは
+# 2日だけだった（スリープ・休止・詰まったタスク・^C）。症状は毎回違うが
+# 根は1つで、「朝8時にPCが起きて動き続けている」前提が成り立っていない。
+#
+# 予測に履歴DB(385MB)は要らない。特徴量はほぼ同一レース内の順位・偏差で、
+# 素の値は出走表ページに印刷されている。ほかに要るのは単勝オッズと
+# stadiums の場別コース成績(24行・15KB)だけ。モデルも1.67MBでリポジトリにある。
+# そのため当日ぶんだけの使い捨てSQLiteを組めば、そのまま予測まで通せる。
+#
+# 履歴DBへの取り込み・判定・検証はローカルが担当する。時刻に依存しないので
+# PCが点いたときに走ればよい。
+
+# ⚠️ 定期実行はまだ入れていない。ローカルの BoatRaceUpdate08 (08:00) が
+# 生きている間に両方走ると、二重に予測して push を奪い合う。
+# ローカル側を「収集と判定だけ・時刻非依存」に作り替えてから
+#   schedule: - cron: '0 23 * * *'   # 08:00 JST
+# を足すこと。それまでは手動起動で検証する。
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日 (YYYY-MM-DD, 省略=今日JST)'
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: morning-predict
+  cancel-in-progress: false
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    # 全場・全レースで約1,000ページ取得する。ローカル実測で35〜60分。
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Predict
+        env:
+          # 履歴DBは持ち込まない。その日ぶんだけの使い捨てDBを使う。
+          BOAT_DB_URL: sqlite:///cloud_scratch.db
+        run: |
+          DATE="${{ github.event.inputs.date }}"
+          if [ -z "$DATE" ]; then
+            DATE=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          fi
+          python main.py predict_cloud "$DATE"
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # 当日ぶんのファイルだけ。performance.json と pdca.json は履歴DBが
+          # 要るのでローカルが書く。使い捨てDBから上書きさせない。
+          git add docs/data/races_*.json docs/data/probs_*.json \
+                  docs/data/bets_*.json docs/data/meta.json
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "auto: morning predict $(TZ=Asia/Tokyo date +%Y-%m-%d)"
+            if git pull --rebase -X ours origin master; then
+              git push
+            else
+              git rebase --abort
+              echo "rebase conflict - skip push"
+            fi
+          fi

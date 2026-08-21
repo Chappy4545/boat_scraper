@@ -224,6 +224,28 @@ def export_meta(source: str = "local") -> None:
                 f"paper_mode={existing['paper_mode']})")
 
 
+def export_stadiums() -> None:
+    """場マスタを docs/data/stadiums.json に出す。
+
+    クラウドで当日予測を回すとき、385MB の履歴DBは持ち込まない。だが特徴量には
+    場別コース成績（1〜6コースの勝率・2連率・3連率）が要る。24行・15KB しか
+    ないので、リポジトリに置いて持ち回る。中身が変わることは滅多にない。
+    """
+    _ensure_data_dir()
+    from src.ingestion.database import get_engine
+    from sqlalchemy import text as sa_text
+
+    with get_engine().connect() as conn:
+        cols = [c[1] for c in conn.execute(sa_text("PRAGMA table_info(stadiums)"))]
+        rows = [dict(zip(cols, r)) for r in conn.execute(sa_text("SELECT * FROM stadiums"))]
+    if not rows:
+        logger.warning("export: stadiums が空のため書き出しません")
+        return
+    path = DATA_DIR / "stadiums.json"
+    path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    logger.info(f"export: {path.name} ({len(rows)}場)")
+
+
 def export_probs(target_date: date) -> None:
     """当日の全組み合わせ+model_probをdocs/data/probs_YYYY-MM-DD.jsonに保存する。
     GitHub Actionsのrefresh_oddsがDBなしでEV再計算するために使う。

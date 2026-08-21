@@ -48,3 +48,7 @@ data/processed/models_backup_*/
 data/processed/models_cutoff_*/
 data/processed/models_prod_backup_*/
 scratch_*
+
+# クラウド予測が使う当日ぶんの使い捨てDB（コミットしない）
+cloud_scratch.db
+data/cloud_*.db

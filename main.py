@@ -76,6 +76,93 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5,
     _purge_raw_cache(config)
 
 
+def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
+    """履歴DBを持たずに当日の予測を作る（GitHub Actions 用）。
+
+    なぜ成立するか: 特徴量はほぼ「同一レース内の順位・偏差」で、素の値は
+    出走表ページに印刷されている（全国勝率・当地勝率・モーター/ボート2連率・
+    F/L・展示タイム・展示ST）。ほかに要るのは単勝オッズ（人気順）と、
+    stadiums の場別コース成績だけ。stadiums は24行・15KB でリポジトリに置ける。
+    つまり 385MB の履歴は当日の予測に一切使われていない。
+
+    そこで「その日ぶんだけの使い捨てSQLite」を組み、収集→特徴量→予測→export
+    という既存の経路をそのまま通す。新しい特徴量コードを書かないので、
+    ローカルとクラウドで結果がずれない。
+
+    履歴DBはこのあとローカルが暇なときに取り込めばよく、朝の時点では要らない。
+    これで朝の買い目が PC の稼働状況に依存しなくなる。
+    """
+    import json as _json
+    import os
+    from pathlib import Path
+
+    d = target_date or date.today()
+    scratch = Path(os.environ.get("BOAT_DB_URL", "").replace("sqlite:///", "")
+                   or f"data/cloud_{d}.db")
+    os.environ["BOAT_DB_URL"] = f"sqlite:///{scratch.as_posix()}"
+    if scratch.exists():
+        scratch.unlink()          # 毎回まっさらから。前日の残りを混ぜない
+
+    from src.ingestion.database import init_db, get_session
+    from src.ingestion.models import Stadium
+    from src.scraping.official import BoatRaceScraper
+    from src.ingestion.saver import save_day
+
+    config = load_config()
+    init_db(config)
+    logger.info(f"クラウド予測: {d}  使い捨てDB={scratch}")
+
+    seed = Path("docs/data/stadiums.json")
+    if not seed.exists():
+        logger.error(f"{seed} がありません。ローカルで export_stadiums を実行してください")
+        return
+    rows = _json.loads(seed.read_text(encoding="utf-8"))
+    # *_at は JSON では文字列で、SQLAlchemy の DateTime 型が受け取らない。
+    # 特徴量では使わないので落とす。
+    rows = [{k: v for k, v in r.items() if not k.endswith("_at")} for r in rows]
+    with get_session() as session:
+        for r in rows:
+            session.add(Stadium(**r))
+    logger.info(f"  場マスタ投入: {len(rows)}場")
+
+    with BoatRaceScraper(config) as scraper:
+        data = scraper.collect_day(d, max_workers=max_workers, skip_before_info=True)
+    logger.info(f"  収集: " + ", ".join(f"{k}={len(v)}" for k, v in data.items()))
+    save_day(data)
+
+    # 使い捨てDBはこの実行が終われば消える。オッズは過去日に遡って取得できない
+    # ので、いま集めた板をここで退避しておかないと永久に失われる。
+    # archive_odds は独立に取り直す作りだが、同じものを2度取る理由はない。
+    # ローカルは後で `python main.py ingest_odds <日付>` で履歴DBに入れる。
+    import gzip as _gzip
+    rows = []
+    for key, df in data.items():
+        if not key.startswith("odds_") or df is None or df.empty:
+            continue
+        for _, r in df.iterrows():
+            try:
+                rows.append({
+                    "stadium_code": str(r["stadium_code"]),
+                    "race_no": int(r["race_no"]),
+                    "bet_type": str(r["bet_type"]),
+                    "combination": str(r["combination"]),
+                    "odds": float(r["odds"]),
+                })
+            except Exception:
+                continue
+    if rows:
+        out = Path("docs/data") / f"odds_raw_{d}.json.gz"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        blob = _json.dumps({"race_date": str(d), "count": len(rows), "odds": rows},
+                           ensure_ascii=False).encode("utf-8")
+        out.write_bytes(_gzip.compress(blob, 9))
+        logger.info(f"  オッズ退避: {out.name} ({len(rows):,}件 / "
+                    f"{out.stat().st_size/1e6:.2f} MB)")
+
+    cmd_predict(d, full_export=False)
+    logger.info(f"クラウド予測 完了: {d}")
+
+
 def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
     """直近N日のうち、データが欠けている日をまとめて収集・判定する。
 
@@ -320,7 +407,7 @@ def cmd_train(date_from: str | None = None, date_to: str | None = None):
     logger.info(f"  ranker: {ranker_summary}")
 
 
-def cmd_predict(target_date: date | None = None):
+def cmd_predict(target_date: date | None = None, full_export: bool = True):
     from src.ingestion.database import init_db, get_session, get_engine
     from src.ingestion.models import Race, Bet
     from src.models.predictor import predict_race, save_predictions, predict_race_pl
@@ -445,10 +532,17 @@ def cmd_predict(target_date: date | None = None):
     # 予測後に自動エクスポート
     from src.export import export_day, export_performance, export_probs, export_meta, export_pdca
     export_day(d)
-    export_performance()
     export_probs(d)
-    export_pdca()
-    export_meta(source="local")
+    # performance/pdca は履歴DBが要る。クラウドの当日予測は使い捨てDBで動くので
+    # ここを呼ぶと空の成績で上書きしてしまう（full_export=False で飛ばす）。
+    if full_export:
+        export_performance()
+        export_pdca()
+        # 場マスタはクラウドの当日予測が使う。中身は滅多に変わらないが、
+        # 変わったときに置き去りにならないようローカル実行のたびに出し直す。
+        from src.export import export_stadiums
+        export_stadiums()
+    export_meta(source="local" if full_export else "cloud")
 
 
 def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
@@ -1390,8 +1484,10 @@ def cmd_ingest_odds(target_date: date | None = None):
 
     df = pd.DataFrame(rows)
     df["race_date"] = pd.to_datetime(payload["race_date"]).date()
-    n = save_odds(df, is_final=True)
-    logger.info(f"オッズ取込完了: {d} {n} 件")
+    # 退避JSONはその日に取った「板」であって精算値ではない。取り込むのは
+    # 後日なので日付からは live と判定されない。明示して板として入れる。
+    n = save_odds(df, is_final=False, force_live=True)
+    logger.info(f"オッズ取込完了: {d} {n} 件（当日の板として取り込み）")
 
 
 def cmd_backtest(date_from: str, date_to: str):
@@ -1446,6 +1542,9 @@ def main():
     elif cmd == "predict":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_predict(d)
+    elif cmd == "predict_cloud":
+        d = date.fromisoformat(args[1]) if len(args) > 1 else None
+        cmd_predict_cloud(d)
     elif cmd == "collect_results":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_collect_results(d)

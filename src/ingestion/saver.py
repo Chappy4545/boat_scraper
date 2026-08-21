@@ -198,7 +198,8 @@ def save_weather(df: pd.DataFrame) -> int:
     return count
 
 
-def save_odds(df: pd.DataFrame, is_final: bool | None = True) -> int:
+def save_odds(df: pd.DataFrame, is_final: bool | None = True,
+              force_live: bool | None = None) -> int:
     """オッズ → odds
 
     is_live（レース当日に取得した＝買う時点で見られた値か）を記録する。
@@ -239,7 +240,9 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True) -> int:
                     session, stadium, rd, _safe_int(row["race_no"])
                 )
                 rd_val = rd.date() if hasattr(rd, "date") else rd
-                is_live = (rd_val == today)
+                # force_live: 退避JSONの取り込みなど「その日に取った板だが
+                # 取り込むのは後日」という場合に、日付から推測させず明示する。
+                is_live = (rd_val == today) if force_live is None else bool(force_live)
                 # None なら行ごとに振り分ける（当日=板 / 後日=確定）
                 row_final = (not is_live) if is_final is None else is_final
 
