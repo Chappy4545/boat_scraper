@@ -58,7 +58,7 @@ def _purge_raw_cache(config: dict) -> None:
 
 
 def cmd_collect(target_date: date | None = None, max_workers: int = 5,
-                skip_before_info: bool = True):
+                skip_before_info: bool = True, skip_odds: bool = False):
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import init_db
     from src.ingestion.saver import save_day
@@ -67,7 +67,9 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5,
     d = target_date or date.today()
     logger.info(f"データ収集開始: {d} (並列={max_workers}, 直前情報={'スキップ' if skip_before_info else '収集'})")
     with BoatRaceScraper(config) as scraper:
-        data = scraper.collect_day(d, max_workers=max_workers, skip_before_info=skip_before_info)
+        data = scraper.collect_day(d, max_workers=max_workers,
+                                   skip_before_info=skip_before_info,
+                                   skip_odds=skip_odds)
     for key, df in data.items():
         logger.info(f"  {key}: {len(df)} 件取得")
     logger.info("DB保存中...")
@@ -1120,20 +1122,34 @@ def cmd_backfill_grades(max_workers: int = 5):
     logger.info(f"バックフィル完了: {updated}/{total} レース更新")
 
 
-def cmd_update(target_date: date | None = None, max_workers: int = 5):
-    """出走表+オッズを収集して全レース予測を生成する（朝8:00 専用）。
-    直前情報はスキップし、全場の全レースを一括処理する。
+def cmd_update(target_date: date | None = None, max_workers: int = 5,
+               predict: bool = True, skip_odds: bool = False):
+    """履歴DBをその日のデータで埋める。
+
+    predict=False / skip_odds=True は、朝の買い目をクラウド(predict_cloud)が
+    作るようになってからのローカル用。クラウドが
+      - 買い目（bets/probs/races JSON）
+      - その時点の板（odds_raw_<日付>.json.gz）
+    を push しているので、ローカルが同じものを取り直す必要はない。
+    ローカルでも予測すると、クラウドが出した買い目を別のオッズで作り直して
+    上書きしてしまう。オッズを取り直すと、買い目を選んだ時点の板が
+    あとの時刻の板で潰れる。どちらも記録を壊すので、やらない。
+
+    残るローカルの仕事は「履歴DBを埋める」ことだけで、これは時刻に依存しない。
     """
     import subprocess
     keep_awake()
     d = target_date or date.today()
-    logger.info(f"=== UPDATE 開始: {d} ===")
-    cmd_collect(d, max_workers=max_workers, skip_before_info=True)
-    # 今日の買い目を先に作る。過去日の穴埋めより優先する。
-    # キャッチアップを収集の中でやっていたため、2026-08-14 は 8/13 の
-    # 取り直し（約1,100リクエスト）が終わるまで当日の予測が始まらず、
-    # レースが始まっても買い目が出なかった。過去日は急がない。
-    cmd_predict(d)
+    logger.info(f"=== UPDATE 開始: {d} (予測={'する' if predict else 'しない'}"
+                f" / オッズ={'取らない' if skip_odds else '取る'}) ===")
+    cmd_collect(d, max_workers=max_workers, skip_before_info=True,
+                skip_odds=skip_odds)
+    if predict:
+        # 今日の買い目を先に作る。過去日の穴埋めより優先する。
+        # キャッチアップを収集の中でやっていたため、2026-08-14 は 8/13 の
+        # 取り直し（約1,100リクエスト）が終わるまで当日の予測が始まらず、
+        # レースが始まっても買い目が出なかった。過去日は急がない。
+        cmd_predict(d)
     logger.info(f"=== UPDATE 完了: {d} ===")
 
     if target_date is None or target_date == date.today():
@@ -1516,7 +1532,11 @@ def main():
     elif cmd == "update":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         workers = int(args[2]) if len(args) > 2 else 5
-        cmd_update(d, max_workers=workers)
+        # --no-predict / --no-odds: 買い目と板はクラウドが作るので、
+        # ローカルは履歴DBを埋めるだけにする（cmd_update の説明を参照）
+        cmd_update(d, max_workers=workers,
+                   predict="--no-predict" not in args,
+                   skip_odds="--no-odds" in args)
     elif cmd == "collect":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         workers = int(args[2]) if len(args) > 2 else 5

@@ -50,6 +50,12 @@ if errorlevel 1 (
     git rebase --abort >> "%LOG%" 2>&1
 )
 
+REM Bring in the board the cloud captured when it chose that day's picks.
+REM The cloud predicts on a throwaway database, so odds_raw_<date>.json.gz is
+REM the only copy, and odds cannot be fetched retrospectively. This runs for
+REM the day that has just finished, so the archive is certain to exist by now.
+"%PY%" main.py ingest_odds %RUNDATE% >> "%LOG%" 2>&1
+
 "%PY%" main.py collect_results %RUNDATE% >> "%LOG%" 2>&1
 "%PY%" main.py judge %RUNDATE% >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"

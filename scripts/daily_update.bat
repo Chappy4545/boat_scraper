@@ -1,4 +1,11 @@
 @echo off
+REM Local daily sync. Since 2026-08-21 this no longer produces the picks --
+REM the cloud does that at 09:30 JST (.github/workflows/morning_predict.yml).
+REM All that is left here is keeping the 385MB history database current, which
+REM does not care what time it runs. That is the point: the machine is
+REM hibernating until its owner switches it on, and in the nine days before
+REM this change the 08:00 task ran on schedule twice.
+REM
 REM Move to the repo root without writing the path.
 REM The path contains Japanese characters; writing it here breaks when
 REM the file encoding differs from the console codepage.
@@ -54,7 +61,17 @@ if errorlevel 1 (
     git rebase --abort >> "%LOG%" 2>&1
 )
 
-"%PY%" main.py update %RUNDATE% >> "%LOG%" 2>&1
+REM Bring in the board the cloud captured when it made the picks. The cloud
+REM runs on a throwaway database, so odds_raw_<date>.json.gz is the only copy
+REM and odds cannot be fetched retrospectively.
+"%PY%" main.py ingest_odds %RUNDATE% >> "%LOG%" 2>&1
+
+REM Fill the history database only. The cloud (morning_predict) makes the
+REM picks now, so predicting here would rebuild them from different odds and
+REM overwrite them, and collecting odds here would overwrite the board the
+REM picks were chosen on. Neither is wanted -- both destroy the record.
+REM What is left does not care what time it runs.
+"%PY%" main.py update %RUNDATE% --no-predict --no-odds >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE %OLDSLEEP% >nul 2>&1
 powercfg /setactive SCHEME_CURRENT >nul 2>&1
