@@ -1,4 +1,4 @@
-# .bat files are what the Windows scheduler executes. Keep their line endings
+﻿# .bat files are what the Windows scheduler executes. Keep their line endings
 # deterministic so git never sees them as "modified" when they are not.
 #
 # Why this matters: core.autocrlf=true made every run see scripts/*.bat as
@@ -19,3 +19,7 @@
 *.db binary
 *.gz binary
 *.png binary
+
+# Actions のワークフロー。run: ブロックは Linux の bash が読むので LF 固定。
+*.yml text eol=lf
+*.yaml text eol=lf
