@@ -13,7 +13,9 @@
 戻り値: 0 = 空いた / 1 = 待ち時間切れ（呼び出し側は警告して続行してよい。
         5分の処理が30分終わらないなら、それはもう別の壊れ方）
 #>
-param([int]$MaxWaitMin = 30)
+# -IncludeUpdate: 朝の更新も待つ。再訓練から使う。訓練は DB を丸ごと読むので、
+# 収集・判定と重なると双方が遅くなり、SQLite のロック待ちも起きる。
+param([int]$MaxWaitMin = 30, [switch]$IncludeUpdate)
 
 $deadline = (Get-Date).AddMinutes($MaxWaitMin)
 while ($true) {
@@ -22,7 +24,11 @@ while ($true) {
             Where-Object {
                 $_.ProcessId -ne $PID -and (
                     $_.CommandLine -like '*daily_judge*' -or
-                    $_.CommandLine -like '*main.py judge*'
+                    $_.CommandLine -like '*main.py judge*' -or
+                    ($IncludeUpdate -and (
+                        $_.CommandLine -like '*daily_update*' -or
+                        $_.CommandLine -like '*main.py update*'
+                    ))
                 )
             }
     )
