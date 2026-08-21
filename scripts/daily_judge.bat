@@ -33,6 +33,23 @@ if not exist "logs" mkdir "logs"
 set "LOG=logs\task_judge.log"
 echo [%date% %time%] JUDGE start >> "%LOG%"
 
+REM Pull BEFORE judging. The cloud rewrites docs/data/bets_<date>.json every
+REM 15 minutes all day; that file is the only record of what was actually on
+REM the board, and judge reads it (_sync_bets_from_json) to put the day's real
+REM picks into the DB. Fetching afterwards meant judge read a copy from before
+REM the racing even started, imported that, exported over the cloud's version,
+REM and then pushed it with `rebase -X theirs` -- discarding the whole day.
+REM 2026-08-20 measured: the cloud board ended with 12 market_blend candidates
+REM and 70 final picks; judge imported the stale 48-entry morning copy
+REM (log: imported=48 added=0) and the 12 candidates were lost. The candidate
+REM rule read 0 for a week because of this, not because it found nothing.
+git fetch origin master >> "%LOG%" 2>&1
+git -c rebase.autoStash=true rebase -X theirs origin/master >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] pre-run rebase failed - aborting, judging local copy >> "%LOG%"
+    git rebase --abort >> "%LOG%" 2>&1
+)
+
 "%PY%" main.py collect_results %RUNDATE% >> "%LOG%" 2>&1
 "%PY%" main.py judge %RUNDATE% >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"

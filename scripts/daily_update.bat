@@ -42,6 +42,18 @@ REM line and the Japanese directory name comes out mangled (verified today).
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\wait_for_judge.ps1" -MaxWaitMin 30 >> "%LOG%" 2>&1
 if errorlevel 1 echo [%date% %time%] judge still running after 30 min - going ahead >> "%LOG%"
 
+REM Pull BEFORE running, for the same reason the judge does: the cloud rewrites
+REM docs/data/bets_<date>.json every 15 minutes and that file is the only record
+REM of what was actually on the board. update's export_day writes over it, so
+REM starting from a stale copy silently discards whatever the cloud recorded.
+REM (2026-08-20: a whole day of market_blend candidates was lost this way.)
+git fetch origin master >> "%LOG%" 2>&1
+git -c rebase.autoStash=true rebase -X theirs origin/master >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] pre-run rebase failed - aborting, using local copy >> "%LOG%"
+    git rebase --abort >> "%LOG%" 2>&1
+)
+
 "%PY%" main.py update %RUNDATE% >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE %OLDSLEEP% >nul 2>&1
