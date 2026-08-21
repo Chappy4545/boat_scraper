@@ -34,13 +34,20 @@ jobs:
 
       - name: Determine kind
         id: kind
+        env:
+          # コミットメッセージを ${{ }} でシェルに直接展開してはいけない。
+          # 複数行のメッセージだと2行目以降がコマンドとして解釈され、
+          # 任意のコードが動く（この repo のコミットは複数行が普通）。
+          # env 経由なら値として渡るので展開されない。
+          MSG: ${{ github.event.head_commit.message }}
+          IN_KIND: ${{ github.event.inputs.kind }}
+          IN_DATE: ${{ github.event.inputs.date }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "kind=${{ github.event.inputs.kind }}" >> "$GITHUB_OUTPUT"
-            echo "date_arg=${{ github.event.inputs.date }}" >> "$GITHUB_OUTPUT"
+            echo "kind=$IN_KIND" >> "$GITHUB_OUTPUT"
+            echo "date_arg=$IN_DATE" >> "$GITHUB_OUTPUT"
           else
             # push: commit messageから判定 (auto: update → daily_push, judge → judge_done)
-            MSG="${{ github.event.head_commit.message }}"
             if echo "$MSG" | grep -qi "judge"; then
               echo "kind=judge_done" >> "$GITHUB_OUTPUT"
             else
