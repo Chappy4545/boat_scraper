@@ -92,13 +92,28 @@ def main() -> None:
         checks.append(("判定", (not late) or bets == 0 or judged / bets >= 0.90,
                        f"{judged}/{bets}本"))
 
-        full = q1(conn, """SELECT COUNT(*) FROM (
-                             SELECT o.race_id FROM odds o JOIN races r ON r.id=o.race_id
-                              WHERE r.race_date=:d AND o.bet_type='nirenfuku'
-                                AND o.is_final=1 AND o.odds>0
-                              GROUP BY o.race_id HAVING COUNT(*)=15)""", d=str(d))
-        checks.append(("確定オッズ", (not late) or (races and full / races >= 0.90),
-                       f"{full}/{races}レース" + (f" ({full / races * 100:.0f}%)" if races else "")))
+        # 2026-08-21 以降、当日の板は is_final=0、レース後の精算値は is_final=1。
+        # 確定オッズはレース後の再取得でしか入らないので、開催中の日に
+        # 「確定オッズが無い」のは正常。翌日以降だけ厳しく見る。
+        def _full(is_final: int) -> int:
+            return q1(conn, f"""SELECT COUNT(*) FROM (
+                                  SELECT o.race_id FROM odds o JOIN races r ON r.id=o.race_id
+                                   WHERE r.race_date=:d AND o.bet_type='nirenfuku'
+                                     AND o.is_final={is_final} AND o.odds>0
+                                   GROUP BY o.race_id HAVING COUNT(*)=15)""", d=str(d))
+        board, full = _full(0), _full(1)
+        # 朝の収集時点では2連複15通りのうち数通りしか値が出ていないのが普通で、
+        # 揃うレースはもともと少ない。合否にするとほぼ毎日 NG になるので数だけ出す。
+        # 締切間際の板（買える値）はクラウドが15分ごとに JSON へ書いており、
+        # DB には入らない。DB の板はあくまで朝のスナップショット。
+        checks.append(("当日の板(朝)", True,
+                       f"{board}/{races}レース"
+                       + (f" ({board / races * 100:.0f}%)" if races else "")))
+        done_day = now.date() > d
+        checks.append(("確定オッズ", (not done_day) or (races and full / races >= 0.90),
+                       f"{full}/{races}レース"
+                       + (f" ({full / races * 100:.0f}%)" if races else "")
+                       + ("（レース後に取得）" if not done_day else "")))
 
         cand_today = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
                                  WHERE r.race_date=:d AND b.pass_reason=:cr""",

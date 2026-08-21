@@ -198,7 +198,7 @@ def save_weather(df: pd.DataFrame) -> int:
     return count
 
 
-def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
+def save_odds(df: pd.DataFrame, is_final: bool | None = True) -> int:
     """オッズ → odds
 
     is_live（レース当日に取得した＝買う時点で見られた値か）を記録する。
@@ -207,6 +207,19 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
     当日取得済みの値は、後日の遡及取得で上書きしない。
     上書きすると「実際に買えた値」が失われ、バックテストが
     レース後の確定値で買い目を選ぶことになる（2026-08-11 に発覚）。
+
+    is_final=None のとき、行ごとに「当日取得なら板(0) / 後日なら確定(1)」と
+    振り分ける。ここを固定 True にしていたことが 2026-08-21 に判明した
+    データ破損の原因だった:
+
+      朝9時の板は2連複15通りのうち数通りしか値が出ていない。それを
+      is_final=1 で保存すると「確定オッズ」の席に座る。レース後の再取得は
+      無い12通りを正しく挿入する一方、既にある数通りは上記の防御に阻まれて
+      朝の値のまま残る。結果、1レースの確定オッズが別時点の値の混合になり、
+      sum(1/オッズ) が 1.35 ではなく 2.0 前後になる（実測 2,047レース）。
+
+    一意制約に is_final が入っているので、板と確定値は別行として共存できる。
+    分けて保存すれば、この衝突は起こりようがない。
     """
     if df is None or df.empty:
         return 0
@@ -227,12 +240,14 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
                 )
                 rd_val = rd.date() if hasattr(rd, "date") else rd
                 is_live = (rd_val == today)
+                # None なら行ごとに振り分ける（当日=板 / 後日=確定）
+                row_final = (not is_live) if is_final is None else is_final
 
                 existing = session.query(Odds).filter_by(
                     race_id=race.id,
                     bet_type=bet_type,
                     combination=combo,
-                    is_final=is_final,
+                    is_final=row_final,
                 ).first()
                 if existing:
                     # 当日取得済みの値を後日の取得で壊さない
@@ -246,7 +261,7 @@ def save_odds(df: pd.DataFrame, is_final: bool = True) -> int:
                         bet_type=bet_type,
                         combination=combo,
                         odds=_safe_float(row.get("odds")),
-                        is_final=is_final,
+                        is_final=row_final,
                         is_live=is_live,
                     ))
                 count += 1
@@ -336,11 +351,14 @@ def save_day(data: dict) -> dict:
     _save("racelist", save_racelist)
     _save("before_info", save_before_info)
     _save("weather", save_weather)
-    _save("odds_sanrentan", save_odds, True)
-    _save("odds_sanrenfuku", save_odds, True)
-    _save("odds_nirentan", save_odds, True)
-    _save("odds_nirenfuku", save_odds, True)
-    _save("odds_tansho", save_odds, True)
+    # None = 行ごとに振り分け。当日取得なら板(is_final=0)、後日なら確定(1)。
+    # 以前はここが True 固定で、朝のスカスカな板が「確定オッズ」として
+    # 保存されていた（save_odds の説明を参照）。
+    _save("odds_sanrentan", save_odds, None)
+    _save("odds_sanrenfuku", save_odds, None)
+    _save("odds_nirentan", save_odds, None)
+    _save("odds_nirenfuku", save_odds, None)
+    _save("odds_tansho", save_odds, None)
     _save("race_result", save_race_result)
     _save("payouts", save_payouts)
 

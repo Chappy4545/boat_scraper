@@ -184,11 +184,20 @@ def _load_odds(engine, race_id: int) -> pd.DataFrame:
     未来情報リークで回収率が実態より大幅に良く見える。
     予測は本来レース前に行うものでありオッズ未取得なら見送るのが正しいので、
     本番・バックテストとも fallback は許可しない。
+
+    2026-08-21 追記: 当日の板は is_final=0 に入るようになった（saver.save_odds）。
+    買えるのは板の方なので、板があればそれを使う。無い場合だけ確定オッズに
+    落ちる（過去日の再予測など）。どちらを使ったかは呼び出し側で分かるよう
+    列 is_live を返す。
     """
     from sqlalchemy import text
-    sql = "SELECT bet_type, combination, odds FROM odds WHERE race_id = :rid AND is_final = 1"
+    sql = ("SELECT bet_type, combination, odds, is_live FROM odds "
+           "WHERE race_id = :rid AND is_final = :fin AND odds > 0")
     with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn, params={"rid": race_id})
+        live = pd.read_sql(text(sql), conn, params={"rid": race_id, "fin": 0})
+        if not live.empty:
+            return live
+        return pd.read_sql(text(sql), conn, params={"rid": race_id, "fin": 1})
 
 
 def _pass_record(race_id, race_date, stadium_code, bet) -> dict:

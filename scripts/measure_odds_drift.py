@@ -70,6 +70,7 @@ def main() -> None:
 
     files = sorted(Path("docs/data").glob("bets_2026-*.json"))[-ndays:]
     ratios, rows = [], []
+    dropped: dict[str, int] = defaultdict(int)   # 板として成立せず捨てた賭式
     for f in files:
         d = f.stem.replace("bets_", "")
         snaps = snapshots(f"docs/data/{f.name}")
@@ -85,6 +86,27 @@ def main() -> None:
                 "JOIN races r ON r.id = o.race_id "
                 "WHERE r.race_date = :d AND o.is_final = 1 AND o.odds > 0"), {"d": d}):
                 final[int(rid)][(str(bt), str(cb))] = float(o)
+
+        # 確定オッズ側の健全性を検査してから使う。
+        # DB の確定オッズは朝の値が残ったまま一部だけ後から上書きされることが
+        # あり、そうなると1つの賭式の中に別時点の値が混ざる。混ざった集合は
+        # 板として成立しないので sum(1/オッズ) で弾ける（控除率25.8%なら
+        # どの賭式でも 1.35 前後に必ず落ちる）。
+        # 2026-08-21 実測: 若松 R2 の 2連複は 15通り中3通りが朝の値のままで
+        # 合計 2.213 になっており、そのせいで「確定 2.2」という実在しない
+        # 下振れが最大の例として出ていた。
+        need = {"nirenfuku": 15, "nirentan": 30, "sanrenfuku": 20,
+                "sanrentan": 120, "tansho": 6}
+        for rid in list(final):
+            by_type: dict[str, list[float]] = defaultdict(list)
+            for (bt, _cb), o in final[rid].items():
+                by_type[bt].append(o)
+            for bt, odds_list in by_type.items():
+                book = sum(1.0 / o for o in odds_list)
+                if len(odds_list) != need.get(bt) or not (1.20 <= book <= 1.50):
+                    dropped[bt] += 1
+                    for key in [k for k in final[rid] if k[0] == bt]:
+                        del final[rid][key]
 
         for rid, ct in close.items():
             try:
@@ -107,7 +129,8 @@ def main() -> None:
                 if not fin:
                     continue
                 ratios.append(fin / b["odds"])
-                rows.append((d, b["combination"], b["odds"], fin, fin / b["odds"], gap))
+                rows.append((d, b["combination"], b["odds"], fin, fin / b["odds"], gap,
+                             b.get("rule") or "r5"))
 
     if not ratios:
         print("比較できるデータがありませんでした")
@@ -136,11 +159,28 @@ def main() -> None:
         print(f"    {d}: {len(v):3d}件  中央値{np.median(v):.3f}  "
               f"平均{v.mean():.3f}  下振れ{(v < 1).mean() * 100:.0f}%")
 
+    # ルール別。混合ルールは「まだ誰も買っていない＝オッズが高い」買い目を
+    # 狙う設計なので、締切間際に資金が入ると真っ先に潰れる。R5 は本命寄りで
+    # 板が厚く動きにくい。同じ数字で語ると両方を読み違える。
+    print("\n  ルール別:")
+    by_rule: dict[str, list] = defaultdict(list)
+    for row in rows:
+        by_rule[row[6]].append(row[4])
+    for name in sorted(by_rule):
+        v = np.array(by_rule[name])
+        print(f"    {name:14} {len(v):3d}件  中央値{np.median(v):.3f}  "
+              f"平均{v.mean():.3f}  下振れ{(v < 1).mean() * 100:.0f}%")
+
+    if dropped:
+        print("\n  板として成立せず除外した確定オッズ（賭式ごとのレース数）:")
+        for bt, n in sorted(dropped.items(), key=lambda x: -x[1]):
+            print(f"    {bt:14} {n}レース")
+
     worst = sorted(rows, key=lambda r: r[4])[:5]
     print("\n  下振れが大きかった例:")
-    for d, cb, rec, fin, r, gap in worst:
+    for d, cb, rec, fin, r, gap, rule in worst:
         print(f"    {d} {cb:6} 記録{rec:6.1f} → 確定{fin:6.1f}  "
-              f"({(r - 1) * 100:+.0f}%)  板の古さ{gap:.0f}分")
+              f"({(r - 1) * 100:+.0f}%)  板の古さ{gap:.0f}分  {rule}")
 
 
 if __name__ == "__main__":
