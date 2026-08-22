@@ -99,6 +99,30 @@ def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
     from pathlib import Path
 
     d = target_date or date.today()
+
+    # その日が既に始まっているなら作り直さない。
+    #
+    # cmd_predict は買い目を入れ直し、export_day が bets_<日付>.json を
+    # 書き換える。日中に積み上がった板（確定した買い目・混合候補・判定結果）は
+    # そこにしか無いので、走らせ直すと消える。
+    # GitHub の schedule はベストエフォートで、同じリポジトリの odds_refresh
+    # でも 15〜44 分遅れて起動している（2026-08-22 実測、この日は 23 分以上
+    # 経っても起動しなかった）。遅れて昼に動く可能性がある以上、
+    # 「いつ呼ばれても安全」にしておく。
+    bets_today = Path("docs/data") / f"bets_{d}.json"
+    if bets_today.exists():
+        try:
+            cur = _json.loads(bets_today.read_text(encoding="utf-8"))
+        except Exception:
+            cur = []
+        locked = [b for b in cur if b.get("is_final_pick") or b.get("is_hit") is not None]
+        if locked:
+            logger.error(
+                f"{d} は既に始まっています（確定/判定済み {len(locked)}件）。"
+                f"作り直すと日中の記録が消えるため中止します"
+            )
+            return
+
     scratch = Path(os.environ.get("BOAT_DB_URL", "").replace("sqlite:///", "")
                    or f"data/cloud_{d}.db")
     os.environ["BOAT_DB_URL"] = f"sqlite:///{scratch.as_posix()}"
