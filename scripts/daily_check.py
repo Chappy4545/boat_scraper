@@ -53,13 +53,25 @@ def main() -> None:
     checks: list[tuple[str, bool, str]] = []
 
     with get_engine().connect() as conn:
+        # 2026-08-22 以降、朝の買い目はクラウドが使い捨てDBで作る。
+        # そのため「買い目が出たか」は履歴DBではなく docs/data の JSON で見る。
+        # 履歴DBに今日のレースが入るのはローカル同期（13:00 かログオン時）以降で、
+        # それまで 0 レースなのは正常。ここを DB で見ていると毎日誤警報になる。
+        bets_json_path = DATA / f"bets_{d}.json"
+        try:
+            cloud_bets = len(json.loads(bets_json_path.read_text(encoding="utf-8")))
+        except Exception:
+            cloud_bets = 0
+        picks_due = now.date() > d or now.hour >= 10
+        checks.append(("買い目(クラウド)", (not picks_due) or cloud_bets > 0,
+                       f"{cloud_bets}本" + ("（作成前）" if not cloud_bets and not picks_due else "")))
+
         races = q1(conn, "SELECT COUNT(*) FROM races WHERE race_date=:d", d=str(d))
-        # 朝の更新が終わる前は 0 レースで当たり前。開催が始まる 10 時を
-        # 過ぎてから異常とみなす。ここを無条件にしていたため、収集中に
-        # 手で点検を回した記録が残り、解消後も画面が警告し続けた。
-        collected_yet = now.date() > d or now.hour >= 10
-        checks.append(("レース取得", (not collected_yet) or races > 0,
-                       f"{races}レース" + ("（収集前）" if not races and not collected_yet else "")))
+        # 履歴DBへの取り込みはローカル同期の仕事。13:00 のトリガーを見込んで
+        # 14 時以降だけ厳しく見る。
+        synced_yet = now.date() > d or now.hour >= 14
+        checks.append(("履歴DB取り込み", (not synced_yet) or races > 0,
+                       f"{races}レース" + ("（同期前）" if not races and not synced_yet else "")))
 
         bets = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
                            WHERE r.race_date=:d AND b.is_pass=0""", d=str(d))
