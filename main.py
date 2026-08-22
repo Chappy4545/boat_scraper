@@ -58,18 +58,27 @@ def _purge_raw_cache(config: dict) -> None:
 
 
 def cmd_collect(target_date: date | None = None, max_workers: int = 5,
-                skip_before_info: bool = True, skip_odds: bool = False):
+                skip_before_info: bool = True, skip_odds: bool = False,
+                skip_results: bool | None = None):
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import init_db
     from src.ingestion.saver import save_day
     config = load_config()
     init_db(config)
     d = target_date or date.today()
-    logger.info(f"データ収集開始: {d} (並列={max_workers}, 直前情報={'スキップ' if skip_before_info else '収集'})")
+    # 当日はまだレースが終わっていないので結果ページはほぼ空で返る
+    # （2026-08-22 実測: 156回叩いて中身は6レース分）。着順と払戻は夜の判定が
+    # collect_day_results で正しく集める。過去日のキャッチアップでは必ず取る。
+    if skip_results is None:
+        skip_results = (d == date.today())
+    logger.info(f"データ収集開始: {d} (並列={max_workers}, "
+                f"直前情報={'スキップ' if skip_before_info else '収集'}, "
+                f"結果={'スキップ' if skip_results else '収集'})")
     with BoatRaceScraper(config) as scraper:
         data = scraper.collect_day(d, max_workers=max_workers,
                                    skip_before_info=skip_before_info,
-                                   skip_odds=skip_odds)
+                                   skip_odds=skip_odds,
+                                   skip_results=skip_results)
     for key, df in data.items():
         logger.info(f"  {key}: {len(df)} 件取得")
     logger.info("DB保存中...")
@@ -152,7 +161,11 @@ def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
     logger.info(f"  場マスタ投入: {len(rows)}場")
 
     with BoatRaceScraper(config) as scraper:
-        data = scraper.collect_day(d, max_workers=max_workers, skip_before_info=True)
+        # 朝の予測に着順は要らない。当日はまだ終わっていないので結果ページは
+        # ほぼ空で返る（実測 156回叩いて6レース分）。着順は夜の判定が集める。
+        data = scraper.collect_day(d, max_workers=max_workers,
+                                   skip_before_info=True,
+                                   skip_results=(d == date.today()))
     logger.info(f"  収集: " + ", ".join(f"{k}={len(v)}" for k, v in data.items()))
     save_day(data)
 
