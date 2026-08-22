@@ -860,13 +860,22 @@ class BoatRaceScraper(BaseScraper):
         logger.info(f"終了済みレース: {len(finished)}件")
 
         merged: dict[str, list] = {"race_result": [], "payouts": []}
+        # 中身が返ってきたレース。例外を出さずに空を返す経路があるので、
+        # 「失敗しなかった」ではなく「取れた」を数える。
+        got: set = set()
+
+        def _take(vc: str, rn: int, rr, py) -> None:
+            if rr is not None and not rr.empty:
+                merged["race_result"].append(rr)
+                got.add((vc, rn))
+            if py is not None and not py.empty:
+                merged["payouts"].append(py)
 
         if max_workers <= 1:
             for venue_code, race_no in finished:
                 try:
                     rr, py = self.get_race_result_and_payouts(venue_code, race_date, race_no)
-                    merged["race_result"].append(rr)
-                    merged["payouts"].append(py)
+                    _take(venue_code, race_no, rr, py)
                 except Exception as e:
                     logger.warning(f"結果取得失敗 {venue_code} R{race_no}: {e}")
         else:
@@ -883,10 +892,40 @@ class BoatRaceScraper(BaseScraper):
                     vc, rn = futures[future]
                     try:
                         rr, py = future.result()
-                        merged["race_result"].append(rr)
-                        merged["payouts"].append(py)
+                        _take(vc, rn, rr, py)
                     except Exception as e:
                         logger.warning(f"結果取得失敗 {vc} R{rn}: {e}")
+
+        # 空で返ったレースを取り直す。
+        #
+        # 取得は例外を出さずに空の DataFrame を返すことがあり、そのまま
+        # 「結果収集完了」と記録される。2026-08-22 の朝は 144 レース中
+        # 137 レースがこれで、判定は 38 本中 1 本しかできていないのに
+        # 正常終了していた。手で1回叩き直したら 849 件取れたので、
+        # その場でやり直せば自動で戻せる類の失敗。
+        # 翌日の点検で気づいても遅い（判定が1日ずれ、オッズは遡れない）。
+        missing = [(vc, rn) for vc, rn in finished if (vc, rn) not in got]
+        if missing:
+            logger.warning(
+                f"結果が空だったレース {len(missing)}/{len(finished)} 件を取り直します"
+            )
+            retried = 0
+            for vc, rn in missing:
+                try:
+                    rr, py = self.get_race_result_and_payouts(vc, race_date, rn)
+                    before = len(got)
+                    _take(vc, rn, rr, py)
+                    if len(got) > before:
+                        retried += 1
+                except Exception as e:
+                    logger.warning(f"取り直し失敗 {vc} R{rn}: {e}")
+            still = len(finished) - len(got)
+            logger.info(f"取り直し: {retried}/{len(missing)} 件を回収  残り {still} 件")
+            if still:
+                # 中止レースは着順が来ないので 0 にはならないことがある。
+                # 数が多いときだけ声を上げる。
+                level = logger.error if still > len(finished) * 0.1 else logger.info
+                level(f"結果が取れなかったレース {still}/{len(finished)} 件")
 
         return {
             k: pd.concat(v, ignore_index=True)
