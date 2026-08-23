@@ -5,7 +5,11 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import func as sa_func
+from sqlalchemy import func as sa_func, or_ as sa_or
+
+# 検証中の候補ルールの見送り理由（main.CANDIDATE_REASON と同じ値）。
+# ここから main を import すると循環するので、定数を持つ。
+CANDIDATE_REASON = "候補ルール(混合)"
 
 from src.ingestion.database import get_session, get_engine
 from src.ingestion.models import (
@@ -140,12 +144,21 @@ def export_day(target_date: date) -> dict:
             })
 
         # bets JSON
+        #
+        # 買った買い目に加えて、検証中の候補ルール（賭け金0・is_pass=1）も出す。
+        # 出さないと、判定のたびにこの JSON が作り直され、クラウドが日中に
+        # 記録した候補が消える。2026-08-23 実測: 判定を回すと 44件(候補11) が
+        # 29件(候補0) に縮んでいた。候補はここにしか残らない日もある。
+        # 画面側は rule/recommended_amount で除外するので混ざらない
+        # （docs/js/app.js の isCandidate）。
         bets_raw = (
             session.query(Bet, Race, Stadium)
             .join(Race, Bet.race_id == Race.id)
             .join(Stadium, Race.stadium_id == Stadium.id)
             # レース後に生成された買い目は当日買えなかったので出さない（BOUGHT 参照）
-            .filter(Race.race_date == d, Bet.is_pass == False,
+            .filter(Race.race_date == d,
+                    sa_or(Bet.is_pass == False,
+                          Bet.pass_reason == CANDIDATE_REASON),
                     sa_func.date(Bet.created_at) <= Race.race_date)
             .order_by(Race.race_no, Bet.expected_value.desc())
             .all()
@@ -173,6 +186,10 @@ def export_day(target_date: date) -> dict:
                 "actual_payout": b.actual_payout,
                 "result_order": order_map.get(b.race_id),
                 "is_final_pick": bool(b.is_final_pick),
+                # 候補ルールの行だと分かるようにする。画面側の除外条件であり、
+                # クラウドが書く JSON と同じ形にしておく。
+                **({"rule": "market_blend"}
+                   if b.pass_reason == CANDIDATE_REASON else {}),
             }
             for b, r, s in bets_raw
         ]
