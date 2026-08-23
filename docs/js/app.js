@@ -101,6 +101,15 @@ function payoutOf(bet) {
   if (!bet || bet.actual_payout == null) return 0;
   return Math.round((bet.recommended_amount || 0) * bet.actual_payout / 100);
 }
+// 検証中の候補ルール（賭け金0で記録だけしている買い目）。
+// 成績にも件数にも混ぜてはいけない。判定だけはされるので is_hit が入り、
+// 素通しにすると「買っていない買い目」が的中率の分母に乗る。
+// 2026-08-23: 本ページの前日カードだけこの除外が抜けており、
+// 前日実績が 5/44、日別ページが 5/33 と食い違っていた（正しいのは 5/33）。
+// 除外の判定を1箇所にまとめて、同じ取りこぼしが起きないようにする。
+function isCandidate(bet) {
+  return !!bet && (bet.rule === "market_blend" || (bet.recommended_amount || 0) === 0);
+}
 function bn(no) {
   return `<span class="bn bn-${no}">${no}</span>`;
 }
@@ -225,8 +234,8 @@ async function loadBets() {
     // 検証中の候補ルールの買い目は、買う買い目と混ぜない。
     // 賭け金 0 で記録だけしているものなので、一覧に並べると紛らわしい。
     const all = bets || [];
-    state._candCache = all.filter(b => b.rule === "market_blend");
-    state._betsCache = all.filter(b => b.rule !== "market_blend");
+    state._candCache = all.filter(isCandidate);
+    state._betsCache = all.filter(b => !isCandidate(b));
     state._racesCache = races;
     state._paper = !!(meta && meta.paper_mode);
     state._health = health;
@@ -440,8 +449,11 @@ function renderDayPanel(dateStr, bets, refreshText = "") {
     </section>`;
 }
 
-function renderYesterdayResult(yDate, bets) {
+function renderYesterdayResult(yDate, allBets) {
   const el = document.getElementById("yesterday-result");
+  // 買った買い目だけを見る。候補ルールは賭け金0で記録しているだけなので、
+  // 混ぜると的中率の分母が膨らむ（日別ページとの食い違いの原因だった）。
+  const bets = (allBets || []).filter(b => !isCandidate(b));
   const settled = bets.filter(b => b.is_hit !== null && b.is_hit !== undefined);
   if (!settled.length) { el.innerHTML = ""; return; }
 

@@ -53,3 +53,4 @@ scratch_*
 cloud_scratch.db
 data/cloud_*.db
 data/processed/models_start_*/
+data/.train.lock

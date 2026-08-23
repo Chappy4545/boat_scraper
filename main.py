@@ -87,6 +87,21 @@ def cmd_collect(target_date: date | None = None, max_workers: int = 5,
     _purge_raw_cache(config)
 
 
+def _workers_arg(args: list[str], default: int = 5) -> int:
+    """引数から並列数を拾う。フラグが混ざっていても壊れないようにする。
+
+    位置引数として `int(args[2])` で読んでいたため、
+    `main.py update 2026-08-23 --no-predict --no-odds` が
+    ValueError: invalid literal for int() ... '--no-predict' で落ちた
+    （2026-08-23 の夜のローカル同期が丸ごと失敗）。
+    数字に見えるものだけを並列数として拾う。
+    """
+    for a in args[1:]:
+        if a.isdigit():
+            return int(a)
+    return default
+
+
 def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
     """履歴DBを持たずに当日の予測を作る（GitHub Actions 用）。
 
@@ -424,7 +439,55 @@ def keep_awake() -> None:
         logger.warning(f"スリープ抑止を設定できません: {e}")
 
 
+def _acquire_train_lock(max_age_min: int = 90):
+    """訓練の同時実行を止める。競合したら非ゼロで終わる。
+
+    訓練は data/processed/models を書き換える。2つ走ると最後に書いた方が残り、
+    どちらの成果物か分からないものが出来上がる。
+
+    2026-08-23 に実際に起きた: 日曜9:00の週次訓練がPC休止で取りこぼされ、
+    起動時に発火。そこへ検証用の訓練（08-10打ち切り）を並行実行してしまい、
+    週次タスクが検証用モデルを "auto: retrain" としてコミット・push した。
+    翌朝のクラウドが誤ったモデルで買い目を作る一歩手前だった。
+
+    ⚠️ 中止は必ず非ゼロ終了にすること。weekly_train.bat は終了コードを見てから
+    git add data/processed/models する。0 で返すと「訓練していないのに
+    コミットする」経路が開く。
+    """
+    import os
+    import time
+    from pathlib import Path
+
+    lock = Path("data/.train.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    if lock.exists():
+        age = (time.time() - lock.stat().st_mtime) / 60
+        who = lock.read_text(encoding="utf-8", errors="replace").strip()
+        if age < max_age_min:
+            logger.error(
+                f"別の訓練が動いています（{age:.0f}分前に開始: {who}）。"
+                f"同じモデルを奪い合うので中止します"
+            )
+            raise SystemExit(1)
+        logger.warning(f"{age:.0f}分前のロックが残っています。落ちた実行とみなして引き継ぎます: {who}")
+    lock.write_text(f"pid={os.getpid()} start={datetime.now().isoformat(timespec='seconds')}",
+                    encoding="utf-8")
+    return lock
+
+
 def cmd_train(date_from: str | None = None, date_to: str | None = None):
+    from src.features.builder import build_features
+    from src.models.trainer import train_all, train_ranker
+    from src.ingestion.database import init_db
+
+    lock = _acquire_train_lock()
+    try:
+        _cmd_train_inner(date_from, date_to)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _cmd_train_inner(date_from: str | None, date_to: str | None):
     from src.features.builder import build_features
     from src.models.trainer import train_all, train_ranker
     from src.ingestion.database import init_db
@@ -1625,16 +1688,14 @@ def main():
         cmd_initdb()
     elif cmd == "update":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
-        workers = int(args[2]) if len(args) > 2 else 5
         # --no-predict / --no-odds: 買い目と板はクラウドが作るので、
         # ローカルは履歴DBを埋めるだけにする（cmd_update の説明を参照）
-        cmd_update(d, max_workers=workers,
+        cmd_update(d, max_workers=_workers_arg(args),
                    predict="--no-predict" not in args,
                    skip_odds="--no-odds" in args)
     elif cmd == "collect":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
-        workers = int(args[2]) if len(args) > 2 else 5
-        cmd_collect(d, max_workers=workers)
+        cmd_collect(d, max_workers=_workers_arg(args))
     elif cmd == "backfill_grades":
         workers = int(args[1]) if len(args) > 1 else 5
         cmd_backfill_grades(max_workers=workers)
