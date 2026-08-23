@@ -456,6 +456,7 @@ def _acquire_train_lock(max_age_min: int = 90):
     """
     import os
     import time
+    from datetime import datetime as _dt
     from pathlib import Path
 
     lock = Path("data/.train.lock")
@@ -470,7 +471,7 @@ def _acquire_train_lock(max_age_min: int = 90):
             )
             raise SystemExit(1)
         logger.warning(f"{age:.0f}分前のロックが残っています。落ちた実行とみなして引き継ぎます: {who}")
-    lock.write_text(f"pid={os.getpid()} start={datetime.now().isoformat(timespec='seconds')}",
+    lock.write_text(f"pid={os.getpid()} start={_dt.now().isoformat(timespec='seconds')}",
                     encoding="utf-8")
     return lock
 
@@ -729,7 +730,7 @@ def _sync_bets_from_json(d: date) -> None:
     from datetime import datetime, time as dt_time
     from pathlib import Path
     from src.ingestion.database import get_session
-    from src.ingestion.models import Bet, Race
+    from src.ingestion.models import Bet, Race, Stadium
 
     path = Path("docs/data") / f"bets_{d}.json"
     if not path.exists():
@@ -742,11 +743,30 @@ def _sync_bets_from_json(d: date) -> None:
     if not any(b.get("is_final_pick") for b in live):
         return
 
-    live_by_key = {
-        (b["race_id"], b["bet_type"], b["combination"]): b for b in live
-    }
-    added = dropped = updated = 0
+    added = dropped = updated = skipped = 0
     with get_session() as session:
+        # ⚠️ JSON の race_id を信じてはいけない。
+        # クラウドの predict_cloud は当日ぶんだけの使い捨てSQLiteで動くので、
+        # そこで振られる race_id は 1 から始まる別の番号体系になる。
+        # 2026-08-23 実測: JSON の race_id は 7〜168、ローカルの同日は
+        # 36552〜36719。突き合わせに使うと一致せず全件「追加」になり、
+        # しかも id=7 はローカルでは 2026-05-17 戸田R7 を指すため、
+        # まったく別の日のレースに買い目が挿入されていた（実害 116 件）。
+        # 場名とレース番号で引き直す。これは両者で同じ意味を持つ。
+        local_race = {
+            (s.name, r.race_no): r.id
+            for r, s in session.query(Race, Stadium)
+            .join(Stadium, Race.stadium_id == Stadium.id)
+            .filter(Race.race_date == d).all()
+        }
+        live_by_key = {}
+        for b in live:
+            rid = local_race.get((b.get("stadium_name"), b.get("race_no")))
+            if rid is None:
+                skipped += 1
+                continue
+            live_by_key[(rid, b["bet_type"], b["combination"])] = b
+
         rows = (
             session.query(Bet).join(Race, Bet.race_id == Race.id)
             .filter(Race.race_date == d).all()
@@ -779,6 +799,14 @@ def _sync_bets_from_json(d: date) -> None:
             bet.expected_value = src.get("expected_value")
             bet.market_prob = src.get("market_prob", bet.market_prob)
             bet.is_final_pick = bool(src.get("is_final_pick"))
+            # JSON に載っていた＝その日に「買え」と表示した証拠。損益の集計は
+            # date(created_at) <= race_date で絞るので、作成日もレース日に合わせる。
+            # クラウドが買い目を作るようになってから、ローカルには「当日作った
+            # 買い目」が存在せず、キャッチアップが翌日づけで作り直している。
+            # そのままだと実際に表示した買い目が全部集計から外れる
+            # （2026-08-22 実測: 買い目29本すべてが損益に入っていなかった）。
+            if bet.created_at is None or bet.created_at.date() > d:
+                bet.created_at = datetime.combine(d, dt_time(12, 0))
             updated += 1
 
         for key, src in live_by_key.items():
@@ -788,7 +816,7 @@ def _sync_bets_from_json(d: date) -> None:
             # 証拠なので、created_at はレース日にする（BOUGHT の条件に合わせる）。
             is_cand = src.get("rule") == "market_blend"
             session.add(Bet(
-                race_id=src["race_id"], model_version=version,
+                race_id=key[0], model_version=version,   # ローカルで引き直したid
                 bet_type=src["bet_type"], combination=src["combination"],
                 model_prob=src.get("model_prob"),
                 market_prob=src.get("market_prob"),
@@ -804,8 +832,15 @@ def _sync_bets_from_json(d: date) -> None:
 
     logger.info(
         f"日中の買い目を取り込み: {d} 反映={updated}件 追加={added}件 "
-        f"見送りへ={dropped}件"
+        f"見送りへ={dropped}件" + (f" 場が引けず無視={skipped}件" if skipped else "")
     )
+    if skipped:
+        # 場名とレース番号でローカルのレースを引けなかった＝その日の racelist が
+        # まだ履歴DBに入っていない。黙って捨てると記録が欠ける。
+        logger.warning(
+            f"{skipped}件は場名/レース番号でレースを特定できず取り込めませんでした。"
+            f"先に collect でその日の出走表を入れてください"
+        )
 
 
 def cmd_judge(target_date: date | None = None):
