@@ -82,13 +82,23 @@ def main() -> None:
         # 落ち、クラウドの refresh_odds がそのレースを一切見られない。
         # 静かに効くので気づけなかった: 08-17 は 36/168、08-18 は 9/144 しか
         # 対象になっておらず、候補ルールが5日で1本しか貯まらなかった。
-        scored = q1(conn, """SELECT COUNT(DISTINCT r.id) FROM races r
-                             WHERE r.race_date=:d AND EXISTS
-                             (SELECT 1 FROM bets b WHERE b.race_id=r.id
-                                AND b.model_prob IS NOT NULL)""", d=str(d))
-        checks.append(("予測対象", races == 0 or scored / races >= 0.90,
-                       f"{scored}/{races}レース"
-                       + (f" ({scored / races * 100:.0f}%)" if races else "")))
+        #
+        # 数えるのは probs_<日付>.json であって DB ではない。予測はクラウドで
+        # 走り、ローカルDBには「買った買い目」しか同期されないので、DB を見ると
+        # 常に 20% 前後になって毎日 NG が鳴る（2026-08-23 の誤報はこれ）。
+        # refresh_odds が実際に読むファイルを直接見るのが正しい。
+        def _json_len(name: str, key: str | None = None) -> int:
+            try:
+                obj = json.loads((DATA / name).read_text(encoding="utf-8"))
+            except Exception:
+                return 0
+            return len(obj.get(key, [])) if key else len(obj)
+
+        scored = _json_len(f"probs_{d}.json", "races")
+        listed = _json_len(f"races_{d}.json") or races
+        checks.append(("予測対象", listed == 0 or scored / listed >= 0.90,
+                       f"{scored}/{listed}レース"
+                       + (f" ({scored / listed * 100:.0f}%)" if listed else "")))
 
         done = q1(conn, """SELECT COUNT(DISTINCT r.id) FROM races r
                            WHERE r.race_date=:d AND EXISTS

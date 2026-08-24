@@ -25,6 +25,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 警告文にだけ ⚠️ が入っており、タスクスケジューラの cp932 コンソールでは
+# UnicodeEncodeError で print が落ちる。落ちる位置が通知の手前なので、
+# 「異常なときだけ黙る」という最悪の壊れ方をしていた（2026-08-23 に発覚）。
+# 出せない文字は捨てて、判定と通知は必ず最後まで走らせる。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except Exception:
+        pass
+
+
 def live_since() -> str:
     """運用開始日。これより前は旧ルール・旧モデルの買い目なので混ぜない。
 
@@ -60,6 +71,12 @@ def fetch():
                         ELSE 0 END) AS returned
         FROM bets b JOIN races r ON r.id = b.race_id
         WHERE b.is_pass = 0 AND b.is_hit IS NOT NULL AND r.race_date >= :since
+          -- レース後に作られた買い目は買えなかったので数えない。
+          -- PCが止まっていた日を翌日キャッチアップすると確定オッズで選んで
+          -- しまうため、混ぜると成績が実際より良く見える（08-19 は 25本中
+          -- 13本的中）。この3日分85本で 93.0% が 94.9% に化けていた。
+          -- src/export.py の集計と同じ条件にそろえること。
+          AND date(b.created_at) <= r.race_date
     """
     with get_engine().connect() as conn:
         row = conn.execute(text(sql), {"since": live_since()}).fetchone()

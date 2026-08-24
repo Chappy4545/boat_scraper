@@ -1760,8 +1760,9 @@ def main():
         cmd_collect_results(d)
     elif cmd == "refresh_odds":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
-        workers = int(args[2]) if len(args) > 2 else 5
-        cmd_refresh_odds(d, max_workers=workers)
+        # update / collect と同じ読み方にそろえる。位置引数で int() すると
+        # フラグを足した日に ValueError で落ちる（2026-08-22〜23 の更新停止）。
+        cmd_refresh_odds(d, max_workers=_workers_arg(args))
     elif cmd == "judge":
         d = date.fromisoformat(args[1]) if len(args) > 1 else None
         cmd_judge(d)
