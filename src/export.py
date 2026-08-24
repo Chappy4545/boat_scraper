@@ -7,9 +7,15 @@ from pathlib import Path
 
 from sqlalchemy import func as sa_func, or_ as sa_or
 
-# 検証中の候補ルールの見送り理由（main.CANDIDATE_REASON と同じ値）。
+# 検証中の候補ルールの見送り理由（main.CANDIDATE_REASONS と同じ値）。
 # ここから main を import すると循環するので、定数を持つ。
-CANDIDATE_REASON = "候補ルール(混合)"
+#
+# ⚠️ 必ず複数形で判定すること。棄却した market_blend の43本が DB に残って
+# おり、単一の文字列で比べるとそれが本番ルールの成績に混ざる。
+CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)")
+# 見送り理由 → 画面と JSON で使うルール名
+CANDIDATE_RULE_OF = {"候補ルール(混合)": "market_blend",
+                     "候補ルール(縮み補正)": "shrink_adj"}
 
 from src.ingestion.database import get_session, get_engine
 from src.ingestion.models import (
@@ -158,7 +164,7 @@ def export_day(target_date: date) -> dict:
             # レース後に生成された買い目は当日買えなかったので出さない（BOUGHT 参照）
             .filter(Race.race_date == d,
                     sa_or(Bet.is_pass == False,
-                          Bet.pass_reason == CANDIDATE_REASON),
+                          Bet.pass_reason.in_(CANDIDATE_REASONS)),
                     sa_func.date(Bet.created_at) <= Race.race_date)
             .order_by(Race.race_no, Bet.expected_value.desc())
             .all()
@@ -188,8 +194,8 @@ def export_day(target_date: date) -> dict:
                 "is_final_pick": bool(b.is_final_pick),
                 # 候補ルールの行だと分かるようにする。画面側の除外条件であり、
                 # クラウドが書く JSON と同じ形にしておく。
-                **({"rule": "market_blend"}
-                   if b.pass_reason == CANDIDATE_REASON else {}),
+                **({"rule": CANDIDATE_RULE_OF[b.pass_reason]}
+                   if b.pass_reason in CANDIDATE_RULE_OF else {}),
             }
             for b, r, s in bets_raw
         ]

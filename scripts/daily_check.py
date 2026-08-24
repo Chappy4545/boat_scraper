@@ -35,7 +35,10 @@ except Exception:
 
 JST = timezone(timedelta(hours=9))
 DATA = Path(__file__).resolve().parent.parent / "docs" / "data"
-CANDIDATE_REASON = "候補ルール(混合)"
+# 現在の候補ルールの見送り理由。棄却した market_blend("候補ルール(混合)")は
+# 別物なので混ぜない — 成績を合算すると、棄却済みのルールが新しい候補の
+# 数字を汚す。過去分は memory / git 履歴に残っている。
+CANDIDATE_REASON = "候補ルール(縮み補正)"
 
 
 def q1(conn, sql: str, **p):

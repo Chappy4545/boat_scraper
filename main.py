@@ -231,6 +231,9 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
     なお、オッズは過去日に遡れないためここでは復元できない。
     オッズの保全は GitHub Actions の odds_archive が担う。
     """
+    import json
+    from pathlib import Path
+
     from src.scraping.official import BoatRaceScraper
     from src.ingestion.database import get_engine, get_session
     from src.ingestion.saver import save_day
@@ -321,8 +324,24 @@ def _catchup_missed_results(lookback_days: int = 14, max_workers: int = 5):
                     "SELECT COUNT(*) FROM bets b JOIN races r ON r.id = b.race_id "
                     "WHERE r.race_date = :d AND date(b.created_at) <= r.race_date"
                 ), {"d": str(d)}).scalar()
-            if same_day:
-                logger.info(f"  予測は当日のものを残す: {d} ({same_day}件)")
+            # クラウドが買い目を作るようになってから、その日の記録は
+            # docs/data/bets_<日付>.json にしか無い。DB だけを見ると常に
+            # 「予測が1件も無い日」に見えて、毎日レース後の再予測が走る
+            # （2026-08-22 実測: 8,140件・8/16 は 7,552件・8/19 は 5,810件）。
+            # レース後に作った買い目は確定オッズで選ぶことになるので損益から
+            # 外れるが、DB が無駄に太り、集計のたびに created_at の条件を
+            # 書き忘れる事故を招く（2026-08-24 に watchdog で実際に発生）。
+            cloud_picks = 0
+            try:
+                _bj = Path("docs/data") / f"bets_{d}.json"
+                if _bj.exists():
+                    cloud_picks = len(json.loads(_bj.read_text(encoding="utf-8")))
+            except Exception as e:
+                logger.warning(f"  bets JSON を読めませんでした {d}: {e}")
+            if same_day or cloud_picks:
+                logger.info(
+                    f"  予測は当日のものを残す: {d} "
+                    f"(DB {same_day}件 / クラウドの記録 {cloud_picks}件)")
             else:
                 cmd_predict(d)
             cmd_judge(d)
@@ -703,7 +722,13 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
 
 # 検証中の候補ルールで出した買い目の見送り理由。買っていないので損益には
 # 数えないが、判定はされるので後から成績を測れる。集計から外す目印でもある。
-CANDIDATE_REASON = "候補ルール(混合)"
+#
+# ⚠️ 集計・除外の判定は必ず CANDIDATE_REASONS（複数形）で行うこと。
+# 棄却した market_blend の43本が DB に残っており、単一の文字列で比べると
+# それが本番ルールの成績に混ざる。
+CANDIDATE_REASON = "候補ルール(縮み補正)"
+CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)")
+CANDIDATE_RULES = ("market_blend", "shrink_adj")
 
 
 def _sync_bets_from_json(d: date) -> None:
@@ -787,9 +812,10 @@ def _sync_bets_from_json(d: date) -> None:
             seen.add(key)
             # 検証中の候補ルールの買い目は買っていない。損益に混ぜないよう
             # 見送り扱いのまま残す（判定はされるので後から成績を測れる）。
-            if src.get("rule") == "market_blend":
+            if src.get("rule") in CANDIDATE_RULES:
                 bet.is_pass = True
-                bet.pass_reason = CANDIDATE_REASON
+                bet.pass_reason = (CANDIDATE_REASON if src["rule"] == "shrink_adj"
+                                   else "候補ルール(混合)")
                 bet.recommended_amount = 0
             else:
                 bet.is_pass = False
@@ -814,7 +840,9 @@ def _sync_bets_from_json(d: date) -> None:
                 continue
             # 日中に条件を満たして新しく載った買い目。JSON がその日に推奨した
             # 証拠なので、created_at はレース日にする（BOUGHT の条件に合わせる）。
-            is_cand = src.get("rule") == "market_blend"
+            is_cand = src.get("rule") in CANDIDATE_RULES
+            cand_reason = (CANDIDATE_REASON if src.get("rule") == "shrink_adj"
+                           else "候補ルール(混合)")
             session.add(Bet(
                 race_id=key[0], model_version=version,   # ローカルで引き直したid
                 bet_type=src["bet_type"], combination=src["combination"],
@@ -824,7 +852,7 @@ def _sync_bets_from_json(d: date) -> None:
                 expected_value=src.get("expected_value"),
                 recommended_amount=0 if is_cand else (src.get("recommended_amount") or 0),
                 is_pass=is_cand,
-                pass_reason=CANDIDATE_REASON if is_cand else None,
+                pass_reason=cand_reason if is_cand else None,
                 is_final_pick=bool(src.get("is_final_pick")),
                 created_at=datetime.combine(d, dt_time(12, 0)),
             ))
@@ -907,6 +935,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     docs/data/probs_YYYY-MM-DD.json と races_YYYY-MM-DD.json を読んで動く。
     """
     import json
+    import math
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import gzip
     from datetime import datetime, timezone, timedelta
@@ -951,10 +980,25 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
 
     # 検証中の候補ルール（operation.candidate_rule）。閾値は config に
     # 事前登録してある。ここで動かすと後から都合よく変えられるので読むだけ。
+    #
+    # 2026-08-24 から shrink_adj: 本番ルールと条件は同じで、EV を表示オッズ
+    # ではなく「締切時にいくらになりそうか(F_hat)」で計算する。
+    #   F_hat = exp(a + b*log(板) + c*log(1/p))
+    # 表示オッズで選ぶと、まだ票が入っていない＝これから下がる買い目だけを
+    # 拾う（実測: 選択時4.75倍→確定3.09倍、160.7%が92.5%になる）。
     _cand = config.get("operation", {}).get("candidate_rule") or {}
-    BLEND_ON = bool(_cand)
-    BLEND_W, BLEND_MIN_P, BLEND_MIN_EV = 0.3, 0.10, 1.2
-    BLEND_TYPE = _bt_map.get(_cand.get("bet_type", "2連複"), "nirenfuku")
+    CAND_ON = bool(_cand)
+    CAND_TYPE = _bt_map.get(_cand.get("bet_type", "2連複"), "nirenfuku")
+    CAND_NAME = str(_cand.get("name") or "shrink_adj")
+    _coef = _cand.get("coef") or {}
+    SHRINK_A = float(_coef.get("a", 0.2910))
+    SHRINK_B = float(_coef.get("b", 0.5527))
+    SHRINK_C = float(_coef.get("c", 0.2899))
+
+    def _adj_odds(board_odds: float, p: float) -> float:
+        """締切時の確定オッズの見込み。板が高いほど、pが高いほど割り引く。"""
+        return math.exp(SHRINK_A + SHRINK_B * math.log(board_odds)
+                        + SHRINK_C * math.log(1.0 / p))
 
     # 決着済み・確定済みの買い目はそのまま保持する。
     # 朝の買い目は目安にすぎず、オッズが動けば EV も変わる。日中ずっと
@@ -1088,23 +1132,32 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             if mp is None:
                 continue
 
-            # 検証中の候補ルール（config の operation.candidate_rule）。
-            # 買わない。締切間際に見えていた板で記録を残すのが目的で、
-            # 確定オッズで測った 186% がそのまま出るかを確かめるために要る。
-            # 選ぶのは「まだ誰も買っていない＝オッズが高い」買い目なので、
-            # 締切までに資金が入って下がる。その目減りは実測するしかない。
-            pk = market.get(key) if BLEND_ON and combo["bet_type"] == BLEND_TYPE else None
-            if pk:
-                pb = BLEND_W * mp + (1 - BLEND_W) * pk
-                if pb >= BLEND_MIN_P and pb * odds_val >= BLEND_MIN_EV:
+            # 検証中の候補ルール（config の operation.candidate_rule）。買わない。
+            # 本番ルールと条件は同じで、EV だけを補正後オッズで計算する。
+            # 同じ日・同じレースで「板そのまま」と「補正後」を並べて記録し、
+            # どちらが当てるかを対で比べるのが目的。
+            # market が入っているレースは「全通りに値が出ていて sum(1/odds) が
+            # 控除率どおり」＝板として成立している。係数は成立した板だけで
+            # 推定したので、薄い板に当ててはいけない。実際 2026-08-24 の
+            # 若松1Rは板27.7倍・モデル確率40%で、補正しても EV 4.37 が出た。
+            if (CAND_ON and combo["bet_type"] == CAND_TYPE
+                    and odds_val > 0 and mp > 0 and market.get(key)):
+                ov_c = overrides.get(combo["bet_type"], {})
+                adj = _adj_odds(float(odds_val), mp)
+                if (mp >= ov_c.get("min_model_prob", 0.0)
+                        and ov_c.get("min_odds", min_odds) <= adj
+                        <= ov_c.get("max_odds", max_odds)
+                        and mp * adj >= min_ev):
                     blend_picks.append({
                         "bet_type": combo["bet_type"],
                         "combination": combo["combination"],
                         "model_prob": round(mp, 4),
-                        "market_prob": round(pk, 4),
-                        "blend_prob": round(pb, 4),
+                        "market_prob": round(market.get(key), 4) if market.get(key) else None,
+                        # odds は「見えていた板」。あとで係数を測り直せるよう
+                        # 生の値を残し、補正後は別のキーに入れる。
                         "odds": odds_val,
-                        "expected_value": round(pb * odds_val, 4),
+                        "adj_odds": round(adj, 2),
+                        "expected_value": round(mp * adj, 4),
                     })
 
             # bet_type別の条件を適用する。
@@ -1188,14 +1241,14 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     # 検証中の候補。賭け金 0 で、画面でも別扱いにする。
                     new_bets.append({**common, **b,
                                      "recommended_amount": 0,
-                                     "rule": "market_blend"})
+                                     "rule": CAND_NAME})
             except Exception as e:
                 logger.warning(f"race_id={rid} オッズ更新失敗: {e}")
 
     new_bets.sort(key=lambda b: (b.get("race_no") or 0, -(b.get("expected_value") or 0)))
     all_bets = keep_bets + new_bets
     n_final = sum(1 for b in all_bets if b.get("is_final_pick"))
-    n_blend = sum(1 for b in all_bets if b.get("rule") == "market_blend")
+    n_blend = sum(1 for b in all_bets if b.get("rule") in CANDIDATE_RULES)
     bets_path.write_text(json.dumps(all_bets, ensure_ascii=False, indent=None), encoding="utf-8")
 
     # 締切間際の板を日付ごとのファイルに貯める。1レース1回だけ書き、
