@@ -91,6 +91,33 @@ def test_補正後オッズは板より小さくなる():
         f"オッズが高いほど強く割り引かれていない: {ratios}"
 
 
+def test_本番と候補が同じ組を選んでも両方残る():
+    """DBとJSONを突き合わせるキーにルール名が入っていること。
+
+    候補ルールは本番と同条件で EV だけ補正後オッズで計算するので、同じ
+    組合せを選ぶのが普通。キーが (レース,賭式,組) だけだと後勝ちで片方が
+    消える。2026-08-24 に実データで51本中15本が該当し、そのまま夜の判定を
+    迎えていたら実際に買った11本が候補(賭け金0)に化けていた。
+    """
+    import main
+
+    r5 = main.bet_key(100, "nirenfuku", "1-3", "r5")
+    cand = main.bet_key(100, "nirenfuku", "1-3", "shrink_adj")
+    assert r5 != cand, "同じ組合せで本番と候補が同じキーになっている"
+    # rule が無い JSON 行（古い形式）は本番扱いにそろえる
+    assert main.bet_key(100, "nirenfuku", "1-3", None) == r5
+
+
+def test_見送り理由とルール名が往復する():
+    """DB側(pass_reason)とJSON側(rule)の対応が崩れていないこと。"""
+    import main
+
+    assert set(main._DB_REASON_TO_RULE) == set(main.CANDIDATE_REASONS)
+    assert set(main._RULE_TO_DB_REASON) == set(main.CANDIDATE_RULES)
+    for reason, rule in main._DB_REASON_TO_RULE.items():
+        assert main._RULE_TO_DB_REASON[rule] == reason
+
+
 @pytest.mark.parametrize("board,prob", [(8.0, 0.35), (10.0, 0.40), (25.0, 0.31)])
 def test_高いオッズはEVが下がる(board, prob):
     """狙い撃ちを止めるのがこのルールの目的。

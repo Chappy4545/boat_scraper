@@ -729,6 +729,23 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
 CANDIDATE_REASON = "候補ルール(縮み補正)"
 CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)")
 CANDIDATE_RULES = ("market_blend", "shrink_adj")
+# 見送り理由 → JSON の rule 名。DBの行とJSONの行を突き合わせるのに使う。
+_DB_REASON_TO_RULE = {"候補ルール(混合)": "market_blend",
+                      "候補ルール(縮み補正)": "shrink_adj"}
+_RULE_TO_DB_REASON = {v: k for k, v in _DB_REASON_TO_RULE.items()}
+
+
+def bet_key(race_id, bet_type: str, combination: str, rule: str | None):
+    """JSON の買い目と DB の行を突き合わせるキー。
+
+    ⚠️ ルール名を必ず含めること。本番ルールと候補ルールは同じ組合せを選ぶ
+    （候補は本番と同条件で EV だけ補正後オッズで計算するため）。
+    (レース, 賭式, 組) だけにすると後勝ちで片方が消える。
+    2026-08-24 実測: 51本中15本が重複し、そのまま取り込むと実際に買った
+    11本が候補(賭け金0)に化けて損益から外れ、候補4本が消えるところだった。
+    bets テーブルに一意制約は無いので、2行として持てる。
+    """
+    return (race_id, bet_type, combination, rule or "r5")
 
 
 def _sync_bets_from_json(d: date) -> None:
@@ -784,13 +801,18 @@ def _sync_bets_from_json(d: date) -> None:
             .join(Stadium, Race.stadium_id == Stadium.id)
             .filter(Race.race_date == d).all()
         }
+        # キーの作り方と、なぜルール名が要るかは bet_key の説明を参照。
+        def _rule_of_db(bet) -> str:
+            return _DB_REASON_TO_RULE.get(bet.pass_reason, "r5")
+
         live_by_key = {}
         for b in live:
             rid = local_race.get((b.get("stadium_name"), b.get("race_no")))
             if rid is None:
                 skipped += 1
                 continue
-            live_by_key[(rid, b["bet_type"], b["combination"])] = b
+            live_by_key[bet_key(rid, b["bet_type"], b["combination"],
+                                b.get("rule"))] = b
 
         rows = (
             session.query(Bet).join(Race, Bet.race_id == Race.id)
@@ -799,7 +821,8 @@ def _sync_bets_from_json(d: date) -> None:
         seen = set()
         version = rows[0].model_version if rows else "v1"
         for bet in rows:
-            key = (bet.race_id, bet.bet_type, bet.combination)
+            key = bet_key(bet.race_id, bet.bet_type, bet.combination,
+                          _rule_of_db(bet))
             src = live_by_key.get(key)
             if src is None:
                 # 日中にオッズが動いて条件を外れた買い目。買っていないので
@@ -814,8 +837,7 @@ def _sync_bets_from_json(d: date) -> None:
             # 見送り扱いのまま残す（判定はされるので後から成績を測れる）。
             if src.get("rule") in CANDIDATE_RULES:
                 bet.is_pass = True
-                bet.pass_reason = (CANDIDATE_REASON if src["rule"] == "shrink_adj"
-                                   else "候補ルール(混合)")
+                bet.pass_reason = _RULE_TO_DB_REASON[src["rule"]]
                 bet.recommended_amount = 0
             else:
                 bet.is_pass = False
@@ -841,8 +863,7 @@ def _sync_bets_from_json(d: date) -> None:
             # 日中に条件を満たして新しく載った買い目。JSON がその日に推奨した
             # 証拠なので、created_at はレース日にする（BOUGHT の条件に合わせる）。
             is_cand = src.get("rule") in CANDIDATE_RULES
-            cand_reason = (CANDIDATE_REASON if src.get("rule") == "shrink_adj"
-                           else "候補ルール(混合)")
+            cand_reason = _RULE_TO_DB_REASON.get(src.get("rule"))
             session.add(Bet(
                 race_id=key[0], model_version=version,   # ローカルで引き直したid
                 bet_type=src["bet_type"], combination=src["combination"],
