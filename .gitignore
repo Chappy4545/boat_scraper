@@ -54,3 +54,6 @@ cloud_scratch.db
 data/cloud_*.db
 data/processed/models_start_*/
 data/.train.lock
+
+# 通知先の webhook URL。投稿権そのものなのでコミットしない
+data/.notify_webhook

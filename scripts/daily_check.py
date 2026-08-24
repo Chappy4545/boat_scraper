@@ -78,7 +78,13 @@ def main() -> None:
 
         bets = q1(conn, """SELECT COUNT(*) FROM bets b JOIN races r ON r.id=b.race_id
                            WHERE r.race_date=:d AND b.is_pass=0""", d=str(d))
-        checks.append(("買い目生成", races == 0 or bets > 0, f"{bets}本"))
+        # 買い目を作るのはクラウドで、ローカルDBに入るのは 22:30 の判定が
+        # _sync_bets_from_json を呼ぶとき。それまで 0 なのが正常なので、
+        # 日中に厳しく見ると毎日 NG が鳴る（「予測対象」と同じ誤報。
+        # 上の「買い目(クラウド)」が当日ぶんの本当の見張りになっている）。
+        judged_yet = now.date() > d or now.hour >= 23
+        checks.append(("買い目生成", (not judged_yet) or races == 0 or bets > 0,
+                       f"{bets}本" + ("（判定前）" if not bets and not judged_yet else "")))
 
         # 組合せごとの model_prob が残っているレースの割合。
         # 1本も買わないレースを1行に畳むと probs_<日付>.json からレースごと
@@ -178,6 +184,20 @@ def main() -> None:
     checks.append(("クラウド更新",
                    age is not None and (not racing_hours or age <= 40),
                    "未取得" if age is None else f"{age:.0f}分前"))
+
+    # 通知が飛ばせる状態か。未設定だと notify.py は標準出力に書くだけで
+    # 正常終了するため、異常が起きても誰にも届かないまま気づけない
+    # （2026-08-24 まで毎晩 "[dry-run: ... not set]" がログに出続けていた）。
+    # 監視が届かないことこそ検知したい。判定は notify.py と同じ関数を使う
+    # ——ここだけ別の探し方をすると、また食い違って気づけなくなる。
+    try:
+        from notify import webhook_url
+        webhook = webhook_url()
+    except Exception as e:
+        webhook = None
+        print(f"  (通知設定の確認に失敗: {e})")
+    checks.append(("通知の宛先", bool(webhook),
+                   "設定済み" if webhook else "未設定（異常が起きても届きません）"))
 
     ng = [c for c in checks if not c[1]]
     print(f"=== {d} デイリーチェック（{now:%H:%M} 時点）===")

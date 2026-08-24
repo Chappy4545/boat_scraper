@@ -27,10 +27,37 @@ def _load_json(path: Path):
         return None
 
 
-def _send(text: str) -> None:
+def webhook_url() -> str | None:
+    """通知先の URL を返す。環境変数 → ローカルファイルの順に見る。
+
+    ファイルも見る理由: タスクスケジューラから起動したプロセスに環境変数が
+    伝わらないことがある。実測（2026-08-24）で、タスクは LastTaskResult=0 を
+    返すのに .bat の中身が動かず、環境変数の有無すら確認できなかった。
+    このプロジェクトはスケジューラ経由の「静かな不発」を何度も踏んでいるので
+    （[[project_update_reliability]]）、環境に依存しない経路を用意する。
+
+    ファイルは .gitignore 済み。URL はそのチャンネルへの投稿権そのものなので
+    リポジトリに入れないこと。
+    """
     url = os.environ.get("NOTIFY_WEBHOOK_URL")
+    if url:
+        return url.strip()
+    f = REPO_ROOT / "data" / ".notify_webhook"
+    try:
+        if f.exists():
+            got = f.read_text(encoding="utf-8").strip()
+            if got:
+                return got
+    except Exception as e:
+        print(f"webhook ファイル読み込み失敗 {f}: {e}", file=sys.stderr)
+    return None
+
+
+def _send(text: str) -> None:
+    url = webhook_url()
     if not url:
-        print("[dry-run: NOTIFY_WEBHOOK_URL not set]")
+        print("[dry-run: 通知先が未設定 "
+              "(環境変数 NOTIFY_WEBHOOK_URL / data/.notify_webhook のどちらも無し)]")
         try:
             sys.stdout.reconfigure(encoding="utf-8")
         except Exception:
@@ -42,7 +69,14 @@ def _send(text: str) -> None:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            # Discord の CDN は既定の User-Agent (Python-urllib/3.x) を
+            # 403 Forbidden で弾く。URL が正しくても必ず失敗するため、
+            # 2026-08-24 まで通知は一度も届いていなかった（19回連続失敗）。
+            # 実測: UA なし → 403 / UA あり → 204。何か入っていればよい。
+            "User-Agent": "boat_scraper-notifier/1.0",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
