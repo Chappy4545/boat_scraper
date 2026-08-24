@@ -4,8 +4,13 @@ on:
   push:
     branches: [master]
     paths:
+      # pdca.json だけにする。1日1〜2回、夜の判定が書くときだけ動く。
+      #
+      # ⚠️ bets_*.json を入れてはいけない。クラウドの refresh_odds が15分ごとに
+      # push しており、実測（2026-08-24）で1日48コミットが該当した。
+      # 通知が48通届くと見なくなり、本当の異常を見落とす。watchdog が
+      # 「毎日鳴ると見なくなるため異常時だけ鳴らす」設計なのと同じ理由。
       - 'docs/data/pdca.json'
-      - 'docs/data/bets_*.json'
   workflow_dispatch:
     inputs:
       kind:
