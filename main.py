@@ -726,12 +726,13 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
 # ⚠️ 集計・除外の判定は必ず CANDIDATE_REASONS（複数形）で行うこと。
 # 棄却した market_blend の43本が DB に残っており、単一の文字列で比べると
 # それが本番ルールの成績に混ざる。
-CANDIDATE_REASON = "候補ルール(縮み補正)"
-CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)")
-CANDIDATE_RULES = ("market_blend", "shrink_adj")
+CANDIDATE_REASON = "候補ルール(価値1点)"
+CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)", "候補ルール(価値1点)")
+CANDIDATE_RULES = ("market_blend", "shrink_adj", "top1_value")
 # 見送り理由 → JSON の rule 名。DBの行とJSONの行を突き合わせるのに使う。
 _DB_REASON_TO_RULE = {"候補ルール(混合)": "market_blend",
-                      "候補ルール(縮み補正)": "shrink_adj"}
+                      "候補ルール(縮み補正)": "shrink_adj",
+                      "候補ルール(価値1点)": "top1_value"}
 _RULE_TO_DB_REASON = {v: k for k, v in _DB_REASON_TO_RULE.items()}
 
 
@@ -1001,25 +1002,13 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
 
     # 検証中の候補ルール（operation.candidate_rule）。閾値は config に
     # 事前登録してある。ここで動かすと後から都合よく変えられるので読むだけ。
-    #
-    # 2026-08-24 から shrink_adj: 本番ルールと条件は同じで、EV を表示オッズ
-    # ではなく「締切時にいくらになりそうか(F_hat)」で計算する。
-    #   F_hat = exp(a + b*log(板) + c*log(1/p))
-    # 表示オッズで選ぶと、まだ票が入っていない＝これから下がる買い目だけを
-    # 拾う（実測: 選択時4.75倍→確定3.09倍、160.7%が92.5%になる）。
+    # ルールの中身は src/betting/candidate_rule.py にまとめてある
+    # （検証スクリプトと同じ関数を使う。別々に書くとズレて事故る）。
+    from src.betting import candidate_rule as CR
     _cand = config.get("operation", {}).get("candidate_rule") or {}
     CAND_ON = bool(_cand)
     CAND_TYPE = _bt_map.get(_cand.get("bet_type", "2連複"), "nirenfuku")
-    CAND_NAME = str(_cand.get("name") or "shrink_adj")
-    _coef = _cand.get("coef") or {}
-    SHRINK_A = float(_coef.get("a", 0.2910))
-    SHRINK_B = float(_coef.get("b", 0.5527))
-    SHRINK_C = float(_coef.get("c", 0.2899))
-
-    def _adj_odds(board_odds: float, p: float) -> float:
-        """締切時の確定オッズの見込み。板が高いほど、pが高いほど割り引く。"""
-        return math.exp(SHRINK_A + SHRINK_B * math.log(board_odds)
-                        + SHRINK_C * math.log(1.0 / p))
+    CAND_NAME = str(_cand.get("name") or "top1_value")
 
     # 決着済み・確定済みの買い目はそのまま保持する。
     # 朝の買い目は目安にすぎず、オッズが動けば EV も変わる。日中ずっと
@@ -1142,6 +1131,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
 
         candidates = []
         blend_picks = []
+        cand_pool: list[dict] = []      # 候補ルールの材料（レース単位で1回判定）
         for combo in combinations:
             if allowed_types and combo["bet_type"] not in allowed_types:
                 continue          # 停止中の買い式（3連単・3連複）を除外
@@ -1161,25 +1151,21 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             # 控除率どおり」＝板として成立している。係数は成立した板だけで
             # 推定したので、薄い板に当ててはいけない。実際 2026-08-24 の
             # 若松1Rは板27.7倍・モデル確率40%で、補正しても EV 4.37 が出た。
+            # 候補ルール(top1_value)はレースごとに1点だけ選ぶので、
+            # ここでは材料を集めるだけ。判定はループの外で1回行う。
+            # market に入っている＝全通りに値が出て sum(1/odds) が控除率
+            # どおり＝板として成立している。係数は成立した板で推定したので、
+            # 薄い板に当ててはいけない（2026-08-24 若松1Rは板27.7倍・
+            # モデル確率40%で、補正しても EV 4.37 が出た）。
             if (CAND_ON and combo["bet_type"] == CAND_TYPE
                     and odds_val > 0 and mp > 0 and market.get(key)):
-                ov_c = overrides.get(combo["bet_type"], {})
-                adj = _adj_odds(float(odds_val), mp)
-                if (mp >= ov_c.get("min_model_prob", 0.0)
-                        and ov_c.get("min_odds", min_odds) <= adj
-                        <= ov_c.get("max_odds", max_odds)
-                        and mp * adj >= min_ev):
-                    blend_picks.append({
-                        "bet_type": combo["bet_type"],
-                        "combination": combo["combination"],
-                        "model_prob": round(mp, 4),
-                        "market_prob": round(market.get(key), 4) if market.get(key) else None,
-                        # odds は「見えていた板」。あとで係数を測り直せるよう
-                        # 生の値を残し、補正後は別のキーに入れる。
-                        "odds": odds_val,
-                        "adj_odds": round(adj, 2),
-                        "expected_value": round(mp * adj, 4),
-                    })
+                cand_pool.append({
+                    "bet_type": combo["bet_type"],
+                    "combination": combo["combination"],
+                    "model_prob": mp,
+                    "odds": float(odds_val),
+                    "market_prob": market.get(key),
+                })
 
             # bet_type別の条件を適用する。
             # ここを見ていなかったため、朝の predict では見送られた買い目が
@@ -1210,6 +1196,18 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         candidates = candidates[:max_bets]
         for c in candidates:
             del c["_ev"]
+
+        # 候補ルール(top1_value)をレースに1回だけ当てる。
+        # ①確率が最大の1点を選ぶ（オッズを見ない）②板から確定オッズを見込む
+        # ③見込みで期待値が閾値を超えたら記録する。判定の中身は
+        # src/betting/candidate_rule.py（検証スクリプトと共有）。
+        if CAND_ON and cand_pool:
+            got = CR.evaluate(cand_pool, _cand)
+            if got:
+                mk = next((c.get("market_prob") for c in cand_pool
+                           if c["combination"] == got["combination"]), None)
+                got["market_prob"] = round(mk, 4) if mk else None
+                blend_picks.append(got)
 
         # 締切間際の板をまるごと残す。ここでしか取れない。
         #

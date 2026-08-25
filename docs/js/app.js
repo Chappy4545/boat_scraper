@@ -107,7 +107,7 @@ function payoutOf(bet) {
 // 2026-08-23: 本ページの前日カードだけこの除外が抜けており、
 // 前日実績が 5/44、日別ページが 5/33 と食い違っていた（正しいのは 5/33）。
 // 除外の判定を1箇所にまとめて、同じ取りこぼしが起きないようにする。
-const CANDIDATE_RULES = ["market_blend", "shrink_adj"];
+const CANDIDATE_RULES = ["market_blend", "shrink_adj", "top1_value"];
 function isCandidate(bet) {
   return !!bet && (CANDIDATE_RULES.includes(bet.rule)
     || (bet.recommended_amount || 0) === 0);

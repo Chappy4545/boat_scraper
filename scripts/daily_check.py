@@ -38,7 +38,7 @@ DATA = Path(__file__).resolve().parent.parent / "docs" / "data"
 # 現在の候補ルールの見送り理由。棄却した market_blend("候補ルール(混合)")は
 # 別物なので混ぜない — 成績を合算すると、棄却済みのルールが新しい候補の
 # 数字を汚す。過去分は memory / git 履歴に残っている。
-CANDIDATE_REASON = "候補ルール(縮み補正)"
+CANDIDATE_REASON = "候補ルール(価値1点)"
 
 
 def q1(conn, sql: str, **p):
@@ -198,6 +198,30 @@ def main() -> None:
         print(f"  (通知設定の確認に失敗: {e})")
     checks.append(("通知の宛先", bool(webhook),
                    "設定済み" if webhook else "未設定（異常が起きても届きません）"))
+
+    # 候補ルールの一番の急所: 板から見込んだオッズが、実際の確定オッズより
+    # 高く出ていないか。高い＝期待値を過大評価している＝過去2件の候補を
+    # 潰したのと同じ「オッズの上振れを拾う」構造。
+    # ⚠️ 危険は 1.0 を**上回る**方向。1.0未満は推定が保守的なだけで安全側。
+    # 見込みオッズは DB に列が無いので expected_value / model_prob で戻す。
+    ratio_max = float(rule.get("monitor_ratio_max") or 1.15)
+    with get_engine().connect() as conn:
+        rs = [r[0] for r in conn.execute(text(f"""
+            SELECT (b.expected_value / b.model_prob) / o.odds
+            FROM bets b JOIN races r ON r.id = b.race_id
+            JOIN odds o ON o.race_id = b.race_id AND o.bet_type = b.bet_type
+                       AND o.combination = b.combination AND o.is_final = 1
+            WHERE b.pass_reason = :cr AND b.model_prob > 0 AND o.odds > 0
+              AND r.race_date >= :s"""), {"cr": CANDIDATE_REASON, "s": live_since})]
+    if len(rs) >= 20:
+        rs.sort()
+        med = rs[len(rs) // 2]
+        checks.append(("見込みオッズの精度", med <= ratio_max,
+                       f"推定/確定 中央値 {med:.2f}（{len(rs)}本・上限{ratio_max:.2f}）"
+                       + ("　※過大評価" if med > ratio_max else "")))
+    else:
+        checks.append(("見込みオッズの精度", True,
+                       f"{len(rs)}本（20本以上で判定）"))
 
     ng = [c for c in checks if not c[1]]
     print(f"=== {d} デイリーチェック（{now:%H:%M} 時点）===")
