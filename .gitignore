@@ -57,3 +57,6 @@ data/.train.lock
 
 # 通知先の webhook URL。投稿権そのものなのでコミットしない
 data/.notify_webhook
+
+# ウォークフォワードの蓄積(22MB)。scripts/walkforward.py で再生成できる
+data/processed/walkforward.db

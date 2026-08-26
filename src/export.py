@@ -72,6 +72,53 @@ def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# races JSON でレースごとに引き継ぐ項目。DB側が空のときだけ既存を使う。
+_RACE_DETAIL_KEYS = ("entries", "predictions")
+
+
+def _race_key(r: dict):
+    """JSON をまたいでレースを突き合わせるキー。
+
+    ⚠️ `id` は使えない。クラウド(predict_cloud)は「その日ぶんの使い捨て
+    SQLite」で export_day を回すので採番が別体系になる。2026-08-26 実測で
+    クラウド 73〜 / 履歴DB 36936〜 と **重なりゼロ** だった。
+    id で突き合わせた版は例外も出さず黙って0件引き継ぎ、ログには
+    「168件」と出ていた。場とレース番号なら両者で一致する。
+    """
+    return (r.get("stadium"), r.get("race_no"))
+
+
+def _keep_existing_race_details(races_path: Path, races_json: list[dict]) -> list[dict]:
+    """既存 races JSON の出走表・予測を、DB側が空のレースにだけ引き継ぐ。
+
+    呼び出し側(export_day)に経緯を書いた。要点は「クラウドが書いた中身を
+    ローカルの判定が空で上書きする」経路を塞ぐこと。
+    """
+    if not races_path.exists():
+        return races_json
+    try:
+        existing = json.loads(races_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"export: {races_path.name} を読めないので引き継ぎません: {e}")
+        return races_json
+    if not isinstance(existing, list):
+        return races_json
+
+    prev = {_race_key(r): r for r in existing if isinstance(r, dict)}
+    restored = 0
+    for r in races_json:
+        old = prev.get(_race_key(r))
+        if not old:
+            continue
+        for key in _RACE_DETAIL_KEYS:
+            if not r.get(key) and old.get(key):
+                r[key] = old[key]
+                restored += 1
+    if restored:
+        logger.info(f"export: {races_path.name} の出走表/予測 {restored}件を既存から引き継ぎました")
+    return races_json
+
+
 def export_day(target_date: date) -> dict:
     """指定日の races / bets JSON を生成して docs/data/ に保存する。"""
     _ensure_data_dir()
@@ -204,6 +251,25 @@ def export_day(target_date: date) -> dict:
     date_str = str(d)
     races_path = DATA_DIR / f"races_{date_str}.json"
     bets_path = DATA_DIR / f"bets_{date_str}.json"
+
+    # 出走表・予測を空で潰さない（bets と同じ事故が races でも起きていた）。
+    #
+    # クラウド(predict_cloud)は「その日ぶんの使い捨てSQLite」で export_day を
+    # 回すので entries も predictions も揃う。一方ローカルは履歴DBで同じ関数を
+    # 回すが、そこには
+    #   - predictions が無い（2026-08-23 以降。予測はクラウドの仕事にした）
+    #   - entries も判定を先に回した日は、その時点でまだ入っていない
+    # ため、クラウドが朝に書いた中身を空で上書きしてしまう。
+    #
+    # 2026-08-26 実測: クラウドが 00:44 に書いた 168レース(entries/predictions
+    # とも168) を、ローカルの 13:02 の判定が 0/0 に潰していた。画面で買い目を
+    # タップしても選手も確率も出ない状態になる。8/23・8/24 も同じ経路で
+    # predictions だけが消えていた。
+    #
+    # 着順(result_order)は判定で更新する必要があるので、書き換えを止めるのでは
+    # なくレース単位で引き継ぐ。DB側に中身があるときは常にそちらを優先する。
+    races_json = _keep_existing_race_details(races_path, races_json)
+
     races_path.write_text(json.dumps(races_json, ensure_ascii=False, indent=None), encoding="utf-8")
 
     # 中身のある記録を空で潰さない。

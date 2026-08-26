@@ -648,8 +648,10 @@ function renderBets() {
   });
   container.innerHTML = html;
   container.querySelectorAll(".bet-card").forEach((el, i) => {
+    // 第3引数は race_id が引けなかったときの保険（openRaceModal 参照）
     el.addEventListener("click", () => openRaceModal(filtered[i].race_id,
-      `${filtered[i].stadium_name} R${filtered[i].race_no}`));
+      `${filtered[i].stadium_name} R${filtered[i].race_no}`,
+      { stadium: filtered[i].stadium_name, race_no: filtered[i].race_no }));
   });
 }
 
@@ -872,8 +874,17 @@ function loadRaceProbs(raceId) {
 // ════════════════════════════════
 // レース詳細モーダル
 // ════════════════════════════════
-function openRaceModal(raceId, title) {
-  const race    = state._racesCache.find(r => r.id === raceId);
+function openRaceModal(raceId, title, fallback) {
+  // race_id はファイルをまたぐと当てにならない。クラウド(predict_cloud)は
+  // その日ぶんの使い捨てSQLiteで JSON を書くので採番が別体系になり、
+  // 2026-08-26 実測で クラウド 73〜 / 履歴DB 36936〜 と重なりゼロだった。
+  // bets と races の片方だけが差し替わった組でも引けるよう、
+  // 場とレース番号で拾い直す（src/export.py の _race_key と同じ考え方）。
+  let race = state._racesCache.find(r => r.id === raceId);
+  if (!race && fallback) {
+    race = state._racesCache.find(r => r.stadium === fallback.stadium
+                                    && r.race_no === fallback.race_no);
+  }
   const entries = race?.entries ?? [];
   const preds   = race?.predictions ?? [];
   const raceBets = state._betsCache.filter(b => b.race_id === raceId);
@@ -905,15 +916,27 @@ function openRaceModal(raceId, title) {
           </div>`).join("")}
       </div>` : "";
 
-  openModal(`
-    <h3 style="font-weight:700;margin-bottom:.75rem;">${title}</h3>
+  // 出走表が無いとき、表の枠だけ出ると「黙って空」になり原因が分からない。
+  // 2026-08-26 に実際そうなった（判定が races JSON を空で上書きしていた）。
+  // 出ない理由が見えるようにしておく。
+  const tableHtml = entries.length ? `
     <table class="entry-table">
       <thead><tr>
         <th>枠</th><th style="text-align:left">選手</th><th>級</th>
         <th>全勝率</th><th>M2連</th><th>1着%</th>
       </tr></thead>
       <tbody>${entryRows}</tbody>
-    </table>
+    </table>` : `
+    <div class="empty" style="padding:1rem 0;">
+      このレースの出走表が取れていません<br>
+      <span style="font-size:.75rem;color:var(--muted);">
+        データの更新待ちか、書き出しに失敗しています
+      </span>
+    </div>`;
+
+  openModal(`
+    <h3 style="font-weight:700;margin-bottom:.75rem;">${title}</h3>
+    ${tableHtml}
     ${betsSection}
   `);
 }
