@@ -72,6 +72,45 @@ def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def json_race_id(race_date, stadium_code, race_no) -> int:
+    """JSON に出すレース番号。**DBの採番を外に出さないための計算値。**
+
+        YYYYMMDD * 10000 + 場コード * 100 + レース番号
+        2026-08-29 桐生(01) 1R → 202608290101
+
+    なぜ必要か
+    ----------
+    JSON は2人が書く。クラウド(predict_cloud)はその日ぶんの使い捨てSQLite、
+    ローカルは5月からの履歴DB。どちらも `Race.id`（自動採番）をそのまま
+    出していたため、同じレースに2つの番号がついた。
+
+        2026-08-26 実測  クラウド 1〜168 / 履歴DB 36864〜37031  重なりゼロ
+
+    JSON にはどちらの体系かが書いていないので、2つのファイルを同時に読む処理
+    （races×bets、probs×races、画面の買い目→レース）が**黙って空振り**する。
+    実害は4件あり、いずれもエラーを出さずに数日〜2週間続いた:
+
+        08-23 別の日のレースに買い目が116件挿入された
+        08-26 買い目をタップしても選手も確率も出ない
+        08-26/27 昼から買い目が生成されなくなる（31本→11本 / 23本→10本）
+        08-24〜28 端末に古いJSが残り、買っていない候補が並ぶ
+
+    消費側を1つずつ直しても、突き合わせは他にもある（実際 08-29 の点検で
+    未修正が3箇所見つかった）。**書き手の側で番号を揃えるのが本筋。**
+
+    この値は (日付, 場, レース番号) から決まるので、誰が書いても同じになる。
+    最大 202612312412 で JS の安全整数に収まる。
+
+    ⚠️ 過去のJSONはDB採番のまま。日ごとに3ファイルが揃っていればよいので
+    移行は不要（古い日は古い体系で内部一貫している）。
+    """
+    try:
+        ymd = int(str(race_date).replace("-", ""))
+        return ymd * 10000 + int(stadium_code) * 100 + int(race_no)
+    except (TypeError, ValueError):
+        return None
+
+
 # races JSON でレースごとに引き継ぐ項目。DB側が空のときだけ既存を使う。
 _RACE_DETAIL_KEYS = ("entries", "predictions")
 
@@ -181,11 +220,13 @@ def export_day(target_date: date) -> dict:
                     order_map.setdefault(rid, []).append(int(boat))
 
         # races JSON
+        # id は DB の採番ではなく計算値を出す（json_race_id の説明を参照）。
+        # これで誰が書いても同じ番号になり、ファイル間の突き合わせが成立する。
         races_json = []
         for r, s in races:
             races_json.append({
                 "result_order": order_map.get(r.id),
-                "id": r.id,
+                "id": json_race_id(d, s.code, r.race_no) or r.id,
                 "race_date": str(r.race_date),
                 "stadium": s.name,
                 "race_no": r.race_no,
@@ -223,7 +264,8 @@ def export_day(target_date: date) -> dict:
         bets_json = [
             {
                 "bet_id": b.id,
-                "race_id": b.race_id,
+                # races JSON の id と同じ計算値にする（json_race_id 参照）
+                "race_id": json_race_id(d, s.code, r.race_no) or b.race_id,
                 "stadium_name": s.name,
                 "race_no": r.race_no,
                 "grade": r.grade,
@@ -364,7 +406,9 @@ def export_probs(target_date: date) -> None:
     total = 0
     for race_id, stadium_code, race_no, closing_time, bet_type, combination, model_prob in rows:
         entry = race_map[race_id]
-        entry["race_id"] = race_id
+        # races/bets と同じ計算値にする（json_race_id 参照）。
+        # ここが DB 採番のままだと refresh_odds が races と噛み合わない。
+        entry["race_id"] = json_race_id(target_date, stadium_code, race_no) or race_id
         entry["stadium_code"] = stadium_code
         entry["race_no"] = race_no
         entry["closing_time"] = closing_time
@@ -377,6 +421,24 @@ def export_probs(target_date: date) -> None:
 
     data = {"date": str(target_date), "races": list(race_map.values())}
     path = DATA_DIR / f"probs_{target_date}.json"
+
+    # 中身のある記録を減らして上書きしない（bets / races と同じ手当て）。
+    # probs はクラウドの使い捨てDBで作られ、その日の全レースぶんの予測が入る。
+    # 履歴DBには予測が無い（2026-08-23 以降）ので、ローカルでここを走らせると
+    # 買い目のあるレースだけに縮む。2026-08-29 に手で実行して 144→36 レースに
+    # 潰したのを確認した。probs が欠けると refresh_odds がそのレースの買い目を
+    # 一切作れなくなる。レースは日中に減らないので、減る＝壊れている。
+    if path.exists():
+        try:
+            prev = json.loads(path.read_text(encoding="utf-8")).get("races", [])
+        except Exception:
+            prev = []
+        if len(prev) > len(race_map):
+            logger.warning(
+                f"export: {path.name} は {len(prev)}→{len(race_map)}レースに"
+                f"減るため書き換えません")
+            return
+
     path.write_text(json.dumps(data, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(f"export: {path.name} ({len(race_map)}レース, {total}組み合わせ)")
 

@@ -122,6 +122,29 @@ def test_listでなくても落ちない(tmp_path):
     assert keep(p, [_race(1)])[0]["entries"] == []
 
 
+# ── probs も減らして上書きしない ─────────────────────
+#
+# probs はクラウドの使い捨てDBで作られ、その日の全レースぶんの予測が入る。
+# 履歴DBには予測が無いので、ローカルで export_probs を走らせると買い目のある
+# レースだけに縮む。2026-08-29 に手で実行して 144→36 レースに潰した。
+# probs が欠けると refresh_odds がそのレースの買い目を一切作れない。
+
+def test_probsは減るときに書き換えない(tmp_path, monkeypatch):
+    import src.export as E
+    monkeypatch.setattr(E, "DATA_DIR", tmp_path)
+    p = tmp_path / "probs_2020-01-01.json"
+    prev = {"date": "2020-01-01",
+            "races": [{"race_id": 1, "combinations": []},
+                      {"race_id": 2, "combinations": []}]}
+    p.write_text(json.dumps(prev), encoding="utf-8")
+
+    # DB にこの日のデータは無いので、書き出そうとすると 0 レースになる
+    E.export_probs(__import__("datetime").date(2020, 1, 1))
+
+    after = json.loads(p.read_text(encoding="utf-8"))
+    assert len(after["races"]) == 2, "0レースで上書きしてしまった"
+
+
 # ── 実データ: 画面が実際に引けるか ──────────────────────
 
 DATA = ROOT / "docs" / "data"
