@@ -749,6 +749,64 @@ def bet_key(race_id, bet_type: str, combination: str, rule: str | None):
     return (race_id, bet_type, combination, rule or "r5")
 
 
+def index_probs_by_race(probs_data: dict, races_data: list[dict],
+                        upcoming_race_ids) -> dict:
+    """probs JSON を races JSON 側の race_id に合わせて引けるようにする。
+
+    ⚠️ race_id で直に突き合わせてはいけない。probs を書くのはクラウドの
+    predict_cloud で、当日ぶんだけの使い捨てSQLite（1から採番）を使う。
+    一方 races JSON はローカルが日中に走ると履歴DBの採番で上書きされる。
+
+    2026-08-26/27 実測: 一致 **0/168・0/156**。そのまま突き合わせると
+    1レースも引けず、確定済み以外の買い目が消える。実害:
+
+        08/26 13:02 ローカルが判定 → 13:16 クラウド  買い31本 → 11本
+        08/27 13:04 ローカルが判定 → 13:10 クラウド  買い23本 → 10本
+
+    しかもエラーは出ない（対象0レースとして静かに終わる）。ローカルが朝に
+    走った日（08-28）は採番が揃うので何も起きず、日によって出たり出なかったり
+    する。_sync_bets_from_json は同じ理由で既に場名とレース番号で引いている。
+
+    場名が引けないときだけ従来どおり race_id で引く（stadiums.json が無い
+    環境でも、採番が揃っていれば今までどおり動く）。
+    """
+    import json
+    from pathlib import Path
+
+    code_to_name: dict[str, str] = {}
+    st_path = Path("docs/data") / "stadiums.json"
+    if st_path.exists():
+        try:
+            code_to_name = {s["code"]: s["name"]
+                            for s in json.loads(st_path.read_text(encoding="utf-8"))
+                            if s.get("code") and s.get("name")}
+        except Exception as e:
+            logger.warning(f"stadiums.json を読めません（race_id で突き合わせます）: {e}")
+
+    upcoming = set(upcoming_race_ids)
+    by_key = {(r.get("stadium"), r.get("race_no")): r["id"] for r in races_data}
+
+    out: dict = {}
+    remapped = 0
+    for entry in probs_data.get("races", []):
+        own = entry.get("race_id")
+        rid = by_key.get((code_to_name.get(entry.get("stadium_code")),
+                          entry.get("race_no")))
+        if rid is None:
+            rid = own
+        elif rid != own:
+            remapped += 1
+        if rid not in upcoming:
+            continue
+        out[rid] = entry
+    if remapped:
+        logger.warning(
+            f"probs と races で race_id の体系が違います。"
+            f"{remapped}レースを場とレース番号で対応づけました"
+            f"（対象 {len(out)}レース）")
+    return out
+
+
 def _sync_bets_from_json(d: date) -> None:
     """日中に更新された買い目（docs/data/bets_<d>.json）を DB に取り込む。
 
@@ -1072,12 +1130,9 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
         f"（うち今回確定={len(finalize_race_ids)}）/ 保持={len(keep_bets)}件"
     )
 
-    # probs JSONをrace_idでインデックス化
-    probs_by_race = {
-        entry["race_id"]: entry
-        for entry in probs_data.get("races", [])
-        if entry["race_id"] in upcoming_race_ids
-    }
+    # probs JSONを races 側の race_id に合わせてインデックス化する。
+    # ⚠️ race_id で直に突き合わせてはいけない（_sync_bets_from_json と同じ理由）。
+    probs_by_race = index_probs_by_race(probs_data, races_data, upcoming_race_ids)
 
     def fetch_race_odds(race_id: int) -> tuple[int, list[dict]]:
         entry = probs_by_race[race_id]

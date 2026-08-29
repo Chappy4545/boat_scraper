@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v11";
+const CACHE_NAME = "boatrace-v12";
 
 // v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
 //     開けず、PWA として成立していなかった。addAll は1件でも失敗すると
@@ -12,6 +12,17 @@ const CACHE_NAME = "boatrace-v11";
 // v9: 検証中の候補ルールを買い目一覧から分離（件数だけ表示）。
 // v10: 前夜のデイリーチェック結果を読んで、異常時だけ知らせる。
 // v11: その警告に点検時刻を出す（いつ時点の話か分からなかった）。
+// v12: 静的アセットを stale-while-revalidate に変更。
+//      ⚠️ ここを上げ忘れると端末に更新が一切届かない。実際 v11(08-16)のまま
+//      app.js を4回更新し、8/29 まで**2週間**古いままだった:
+//        08-23 前日実績が候補ルールを数えていた修正
+//        08-24 候補ルールを shrink_adj へ
+//        08-25 候補ルールを top1_value へ
+//        08-26 買い目タップ時の出走表・確率の修正
+//      とくに候補ルールの除外が `rule === "market_blend"` のままで、
+//      買っていない候補（賭け金0）が買い目として並んでいた（08-24〜28 で56行）。
+//      以後は次回起動時に自動で新しくなるので、バージョンを上げ忘れても
+//      1回ぶん遅れるだけで済む。それでも変更時は上げること。
 const STATIC_ASSETS = [
   "./",
   "index.html",
@@ -74,6 +85,22 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // 静的アセットはキャッシュ優先
-  e.respondWith(caches.match(req).then((cached) => cached || fetch(req)));
+  // 静的アセット: まずキャッシュを返し、裏で取り直して次回に備える
+  // （stale-while-revalidate）。キャッシュ優先のみだと CACHE_NAME を上げない
+  // 限り永久に古いままで、画面の修正がまったく届かない。表示の速さは保ちつつ、
+  // 取り込み忘れても遅れは1回ぶんに収まる。
+  e.respondWith(
+    caches.match(req).then((cached) => {
+      const fresh = fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => cached);
+      return cached || fresh;
+    })
+  );
 });
