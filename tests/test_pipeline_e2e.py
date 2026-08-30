@@ -90,6 +90,45 @@ class FakeScraper:
     def get_odds_sanrentan(self, *a):
         return _mk("sanrentan", [f"{x}-{y}-{z}" for x, y, z in permutations(self._B, 3)], 8.0)
 
+    # judge_live は「終了済みレース」を払戻一覧ページから特定する。
+    #
+    # ⚠️ 差し替えるのは**ネットワークとページ解析まで**。ここで検証したいのは
+    # 解析結果を受け取った後の組み立て（判定漏れ・行の消失・別レースへの混入）で、
+    # HTMLの読み方ではない。今週のバグ14件は1件もパーサに無かった。
+    # パーサが壊れた場合は「収集0件」として現れ、daily_check が担当する。
+    # 実HTMLを固定資産にする案は採らない。サイトが変われば古い雪だるまに対して
+    # 通り続け、本番が壊れていても緑になる（＝偽の安心）。
+    #
+    # **終了しているのは1レース目だけ**にする。日中はこれが普通の状態で、
+    # 「まだ終わっていないレースの買い目を壊さないか」を見たいため。
+    FINISHED = (RACES[0],)
+
+    def _url(self, key):
+        return f"http://fake/{key}"
+
+    def _fetch_raw(self, url, params=None):
+        return "<html></html>"
+
+    def parse_pay_summary(self, html):
+        return [(STADIUM[0], rn) for rn in self.FINISHED]
+
+    # 着順は 1,2,3,4,5,6 の順で固定（fixture の払戻と揃える）
+    def get_race_result_and_payouts(self, stadium_code, race_date, race_no):
+        rr = pd.DataFrame([{"boat_no": b, "arrival_order": o}
+                           for o, b in enumerate(self._B, start=1)])
+        py = pd.DataFrame([
+            {"bet_type": "tansho", "combination": "1", "payout": 170},
+            {"bet_type": "複勝", "combination": "1", "payout": 110},
+            {"bet_type": "複勝", "combination": "2", "payout": 130},
+            {"bet_type": "kakurenfuku", "combination": "1-2", "payout": 120},
+            {"bet_type": "kakurenfuku", "combination": "1-3", "payout": 150},
+            {"bet_type": "kakurenfuku", "combination": "2-3", "payout": 210},
+            {"bet_type": "nirenfuku", "combination": "1-2", "payout": 260},
+            {"bet_type": "sanrenfuku", "combination": "1-2-3", "payout": 480},
+            {"bet_type": "sanrentan", "combination": "1-2-3", "payout": 990},
+        ])
+        return rr, py
+
 
 # ── 一日ぶんの環境 ────────────────────────────────
 
@@ -162,6 +201,26 @@ def day(tmp_path, monkeypatch):
 def _load(day_dir, name):
     p = day_dir / "docs" / "data" / f"{name}_{D}.json"
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def _mark_final(day_dir):
+    """買い目を「締切前に確定した」状態にする。
+
+    _sync_bets_from_json は確定フラグが1つも無いと即 return する
+    （クラウドが動かなかった日に朝のリストで上書きしないため）。
+    テストの races は未来日なので refresh_odds では確定しない。
+    ここで検証したいのは**突き合わせのロジック**であって確定のタイミングでは
+    ないので、フラグだけ立てて同期を通す。
+    ⚠️ 2026-08-31 に、これを立てずに書いたため夜のテストが同期処理に
+    一度も到達しておらず、08-23 の「別の日へ116件挿入」を再現しても
+    素通りした。
+    """
+    p = day_dir / "docs" / "data" / f"bets_{D}.json"
+    bets = json.loads(p.read_text(encoding="utf-8"))
+    for b in bets:
+        b["is_final_pick"] = True
+    p.write_text(json.dumps(bets, ensure_ascii=False), encoding="utf-8")
+    return len(bets)
 
 
 def _cfg_types():
@@ -351,3 +410,137 @@ def test_欠けたDBで夜を通しても買い目の金額が変わらない(da
     after = {(b["race_id"], b["bet_type"], b["combination"]):
              (b.get("recommended_amount") or 0) for b in _load(day, "bets")}
     assert after == before, "夜の処理で買い目の金額が変わった"
+
+
+# ── クラウドの日中判定（judge_live）──────────────────
+
+def test_日中判定は終わったレースだけを判定する(day):
+    """クラウドが15分ごとに走らせる経路。
+
+    終了しているのは1レース目だけ。**まだ終わっていない2レース目の買い目を
+    判定したり消したりしない**こと。締切後に買い目が生える不具合
+    （2026-08-12: 18本中5本が締切後に生成）と裏返しの関係にある。
+    """
+    import main
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    main.cmd_judge_live(D, max_workers=1)
+
+    bets = _load(day, "bets")
+    assert bets
+    by_race = {}
+    for b in bets:
+        by_race.setdefault(b["race_no"], []).append(b)
+    done, pending = FakeScraper.FINISHED[0], RACES[1]
+
+    assert all(b.get("is_hit") is not None for b in by_race[done]),         "終わったレースが未判定のまま"
+    assert all(b.get("result_order") for b in by_race[done]), "着順が入っていない"
+    assert all(b.get("is_hit") is None for b in by_race[pending]),         "まだ終わっていないレースを判定している"
+
+    # 1着=1, 2着=2 なので 2連複 1-2 は当たり
+    nf = [b for b in by_race[done] if b["bet_type"] == "nirenfuku"]
+    for b in nf:
+        assert b["is_hit"] == (b["combination"] == "1-2"),             f"判定が着順と合わない: {b['combination']} -> {b['is_hit']}"
+
+
+def test_日中判定は買い目の行を減らさない(day):
+    """08-23 に判定のたび JSON が縮んだ（44件→29件）。"""
+    import main
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    before = len(_load(day, "bets"))
+    main.cmd_judge_live(D, max_workers=1)
+    assert len(_load(day, "bets")) == before, "判定で行が減った"
+
+
+# ── 夜の判定（cmd_judge。DBへの取り込みを含む）────────────
+
+def test_夜の判定でJSONの買い目がDBに入る(day):
+    """⚠️ _sync_bets_from_json は 08-23 に **別の日のレースへ116件挿入**した。
+
+    JSON の race_id はクラウドの使い捨てDB採番なので、突き合わせに使うと
+    まったく別のレースに入る。場名とレース番号で引き直すのが正しい。
+
+    ⚠️ 判定条件に注意。「DBの件数 >= JSONの件数」では**壊れても通る**
+    （DBには cmd_predict が作った行が元から大量にある）。2026-08-31 に
+    実際それで素通りした。見るべきは次の2つ:
+      1. どのレースにも紐づかない買い目が生まれていないか（宙に浮いた行）
+      2. JSON に載っている買い目が「条件を外れた」扱いにされていないか
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    main.cmd_judge_live(D, max_workers=1)
+    n_json = _mark_final(day)
+    assert n_json > 0
+
+    main.cmd_judge(D)
+
+    with get_session() as s:
+        race_ids = {r.id for r in s.query(Race).all()}
+        orphan = [b for b in s.query(Bet).all() if b.race_id not in race_ids]
+        assert not orphan,             f"どのレースにも紐づかない買い目が {len(orphan)}件（別の日へ挿入する経路）"
+
+        other_day = (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                     .filter(Race.race_date != D).count())
+        assert other_day == 0, f"別の日のレースに {other_day}件 挿入された"
+
+        dropped = (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                   .filter(Race.race_date == D,
+                           Bet.pass_reason == "日中に条件を外れた").count())
+        assert dropped == 0,             f"JSON に載っている買い目が {dropped}件「条件を外れた」にされた（突き合わせ失敗）"
+
+
+def test_夜の判定で記録用の賭式が損益に入らない(day):
+    """買っていないものを損益に混ぜない。is_pass で区別する。"""
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    main.cmd_judge_live(D, max_workers=1)
+    _mark_final(day)
+    main.cmd_judge(D)
+
+    buy, _paper = _cfg_types()
+    with get_session() as s:
+        bad = [b for b in (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                           .filter(Race.race_date == D).all())
+               if not b.is_pass and b.bet_type not in buy]
+        assert not bad, f"記録用の賭式が損益に入っている: {[b.bet_type for b in bad]}"
+
+
+# ── 監視（daily_check）─────────────────────────────
+
+def test_正常な一日なら点検が警報を出さない(day):
+    """点検が誤警報を出すと、本物の異常が埋もれる。"""
+    import main
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from daily_check import json_integrity_checks
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    checks, _peak = json_integrity_checks(str(D), day / "docs" / "data")
+    ng = [(n, t) for n, ok, t in checks if not ok]
+    assert not ng, f"正常な日に警報: {ng}"
+
+
+def test_racesを壊すと点検が捕まえる(day):
+    """08-26/29 の壊れ方（中身が空）を点検が見逃さないこと。"""
+    import main
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from daily_check import json_integrity_checks
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    p = day / "docs" / "data" / f"races_{D}.json"
+    races = json.loads(p.read_text(encoding="utf-8"))
+    for r in races:
+        r["entries"] = []
+        r["closing_time"] = None
+    p.write_text(json.dumps(races, ensure_ascii=False), encoding="utf-8")
+
+    checks, _ = json_integrity_checks(str(D), day / "docs" / "data")
+    ng = {n for n, ok, _ in checks if not ok}
+    assert "出走表と予測" in ng, "出走表の全消しを見逃した"
+    assert "締切時刻" in ng, "締切時刻の全消しを見逃した"
