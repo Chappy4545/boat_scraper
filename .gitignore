@@ -60,3 +60,6 @@ data/.notify_webhook
 
 # ウォークフォワードの蓄積(22MB)。scripts/walkforward.py で再生成できる
 data/processed/walkforward.db
+
+# ウォークフォワードの予測保存。scripts/wf_store.py で再生成できる
+data/processed/wf_picks.db
