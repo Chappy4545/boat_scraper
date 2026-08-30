@@ -307,10 +307,22 @@ def save_race_result(df: pd.DataFrame) -> int:
 
 
 def save_payouts(df: pd.DataFrame) -> int:
-    """払戻 → payouts"""
+    """払戻 → payouts
+
+    ⚠️ 同一実行内の重複を自前で弾くこと。
+    セッションは autoflush=False なので、直前に session.add したものは
+    下の existing クエリに引っかからない。払戻ページが同じ組を2回返すと
+    2行 add され、**コミット時に UNIQUE 制約で落ちる**。
+
+    しかも落ちるのはループの外（セッションを抜けるとき）なので、
+    行ごとの except では捕まらず save_day 全体が巻き添えになる。
+    2026-08-30 はこれで結果収集が2回止まり、その日の払戻・確定オッズが
+    まるごと入らなかった（拡連複は当日しか取れないので危なかった）。
+    """
     if df is None or df.empty:
         return 0
     count = 0
+    seen: set[tuple] = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -322,6 +334,9 @@ def save_payouts(df: pd.DataFrame) -> int:
                 race = _get_or_create_race(
                     session, stadium, row["race_date"], _safe_int(row["race_no"])
                 )
+                key = (race.id, bet_type, combo)
+                if key in seen:
+                    continue          # この実行で既に積んである
                 existing = session.query(Payout).filter_by(
                     race_id=race.id, bet_type=bet_type, combination=combo
                 ).first()
@@ -334,6 +349,7 @@ def save_payouts(df: pd.DataFrame) -> int:
                         combination=combo,
                         payout=_safe_int(row.get("payout")),
                     ))
+                seen.add(key)
                 count += 1
             except Exception as e:
                 logger.warning(f"save_payouts row error: {e}")
