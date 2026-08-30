@@ -25,10 +25,11 @@
 """
 from __future__ import annotations
 
-import random
 import sqlite3
 import sys
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
@@ -55,17 +56,23 @@ def load(bet_type):
 
 
 def stat(rows):
+    """区分の成績と、回収率の95%区間（ブートストラップ）。
+
+    区間は numpy でまとめて計算する。素の Python で回すと
+    8,000本×1,500回×40区分で数分かかり、検証が止まった（2026-08-30）。
+    """
     n = len(rows)
     if not n:
         return 0, 0.0, 0.0, None, None
+    ret = np.fromiter((r["ret"] for r in rows), dtype=float, count=n)
     hit = sum(r["hit"] for r in rows) / n * 100
-    roi = sum(r["ret"] for r in rows) / n * 100
+    roi = float(ret.mean()) * 100
     if n < 30:
         return n, hit, roi, None, None
-    random.seed(0)
-    v = sorted(sum(s) / len(s) * 100 for s in
-               ([random.choice(rows)["ret"] for _ in rows] for _ in range(1500)))
-    return n, hit, roi, v[37], v[1462]
+    rng = np.random.default_rng(0)
+    means = ret[rng.integers(0, n, size=(1500, n))].mean(axis=1) * 100
+    lo, hi = np.percentile(means, [2.5, 97.5])
+    return n, hit, roi, float(lo), float(hi)
 
 
 def line(label, rows, quiet_small=True):
