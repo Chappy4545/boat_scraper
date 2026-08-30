@@ -45,6 +45,81 @@ def q1(conn, sql: str, **p):
     return conn.execute(text(sql), p).scalar() or 0
 
 
+def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
+    """PWA が実際に読む JSON の中身を検査する。
+
+    件数と鮮度だけを見ていたため、2026-08 の1週間に起きた4件を**全部
+    素通りさせた**（08-29 は「すべて正常」と出していた）。壊れ方はどれも
+    「行はあるが中身が空」「ファイル同士が噛み合わない」で、件数では出ない。
+
+        08-26 出走表と予測が全消し   → 出走表と予測
+        08-29 締切時刻が全消し       → 締切時刻
+        08-26/27 採番の食い違い      → probsとracesの対応 / 買い目とレースの対応
+        08-26/27 買い目が31→11本    → 買い目の目減り
+
+    画面が引く経路をそのままなぞる（別の判定を書くと食い違って気づけない）。
+    戻り値: [(名前, OKか, 詳細), ...] と、次回に渡す買い目の最大数。
+    """
+    prev_health = prev_health or {}
+    checks: list[tuple[str, bool, str]] = []
+
+    def _load(name):
+        try:
+            return json.loads((data_dir / f"{name}_{d}.json").read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    races_j, bets_j, probs_j = _load("races"), _load("bets"), _load("probs")
+
+    if races_j:
+        no_ent = sum(1 for r in races_j if not r.get("entries"))
+        no_prd = sum(1 for r in races_j if not r.get("predictions"))
+        checks.append(("出走表と予測", no_ent == 0 and no_prd == 0,
+                       f"欠け 出走表{no_ent} 予測{no_prd} / {len(races_j)}レース"))
+        no_ct = sum(1 for r in races_j if not r.get("closing_time"))
+        checks.append(("締切時刻", no_ct == 0,
+                       f"欠け {no_ct}/{len(races_j)}レース"
+                       + ("　※買い目が確定しません" if no_ct else "")))
+
+    if races_j and bets_j:
+        rid = {r.get("id") for r in races_j}
+        by_key = {(r.get("stadium"), r.get("race_no")) for r in races_j}
+        lost = [b for b in bets_j
+                if b.get("race_id") not in rid
+                and (b.get("stadium_name"), b.get("race_no")) not in by_key]
+        checks.append(("買い目とレースの対応", not lost,
+                       f"引けない {len(lost)}/{len(bets_j)}本"))
+
+    if races_j and probs_j:
+        # 実際に refresh_odds が使う関数で引く。別の判定にすると食い違う。
+        # 採番が違っても index_probs_by_race が場とレース番号で橋渡しするので、
+        # 「食い違っているか」ではなく「**買い目を作れるか**」を見る。
+        # 橋渡しが要った事実は詳細に出す（ローカルが races を書いた印）。
+        try:
+            from main import index_probs_by_race
+            rid = {r["id"] for r in races_j}
+            need = len(probs_j.get("races", []))
+            remapped = sum(1 for e in probs_j.get("races", []) if e.get("race_id") not in rid)
+            got = index_probs_by_race(probs_j, races_j, [r["id"] for r in races_j])
+            checks.append(("probsとracesの対応", need > 0 and len(got) >= need,
+                           f"{len(got)}/{need}レース"
+                           + (f"（採番違いを{remapped}件橋渡し）" if remapped else "")
+                           + ("　※買い目が作れません" if len(got) < need else "")))
+        except Exception as e:
+            checks.append(("probsとracesの対応", False, f"確認できず: {e}"))
+
+    # 日中に買い目が激減していないか。件数>0 では見えない壊れ方だった
+    peak = 0
+    if str(prev_health.get("date")) == str(d):
+        peak = int(prev_health.get("bets_peak") or 0)
+    now_n = len(bets_j) if bets_j else 0
+    peak = max(peak, now_n)
+    if peak >= 10:
+        checks.append(("買い目の目減り", now_n >= peak * 0.8,
+                       f"いま{now_n}本 / 本日最大{peak}本"))
+    return checks, peak
+
+
 def main() -> None:
     cfg = load_config()
     init_db(cfg)
@@ -172,6 +247,15 @@ def main() -> None:
                              AND b.is_hit=1 AND r.race_date>=:s""",
                   cr=CANDIDATE_REASON, s=live_since)
 
+    # PWA が実際に読む JSON の中身（関数の説明に経緯）
+    prev_health = {}
+    try:
+        prev_health = json.loads((DATA / "health.json").read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    json_checks, peak = json_integrity_checks(d, DATA, prev_health)
+    checks.extend(json_checks)
+
     meta = {}
     try:
         meta = json.loads((DATA / "meta.json").read_text(encoding="utf-8"))
@@ -248,6 +332,8 @@ def main() -> None:
         "ng": [n for n, _, _ in ng],
         "candidate": {"today": cand_today, "cumulative": cum,
                       "judged": cum_judged, "target": target},
+        # その日の買い目の最大数。次回の点検が「目減りしていないか」に使う
+        "bets_peak": peak,
     }
     DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "health.json").write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
