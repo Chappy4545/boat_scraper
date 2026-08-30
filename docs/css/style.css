@@ -1411,3 +1411,11 @@ body {
 .sec-divider--final { color: var(--gold); }
 .sec-divider--final::after { background: linear-gradient(90deg, rgba(255,213,79,.5), transparent); }
 .close-time { font-variant-numeric: tabular-nums; }
+
+/* 賭式の層と実測回収率。2026-08-30 に6賭式へ広げたとき追加。
+   「買い目」とだけ書くと期待値がプラスに見えるので、必ず実測値を併記する。 */
+.tier-badge{
+  display:inline-block; margin:0 .35rem 0 .2rem; padding:.05rem .35rem;
+  border:1px solid var(--surface2); border-radius:.6rem;
+  font-size:.68rem; color:var(--muted); white-space:nowrap;
+}

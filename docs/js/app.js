@@ -90,7 +90,29 @@ function categoryBadges(raceType, isNight) {
 }
 
 function betTypeLabel(t) {
-  return { sanrentan:"3連単", sanrenfuku:"3連複", nirentan:"2連単", nirenfuku:"2連複" }[t] ?? t;
+  return { tansho:"単勝", fukusho:"複勝", kakurenfuku:"拡連複",
+           nirentan:"2連単", nirenfuku:"2連複",
+           sanrenfuku:"3連複", sanrentan:"3連単" }[t] ?? t;
+}
+
+// 賭式ごとの層と、未見データでの実測回収率。
+//
+// 2026-08-30、17,090レース・独立2窓で測った「モデルの確率が最大の1点」の成績。
+// 表示は保守側（悪い方の窓）を出す。⚠️ どれも100%未満なので、
+// 買えば平均して減る。数字を出さずに「買い目」とだけ書くと誤解を招く。
+const BET_TIER = {
+  fukusho:     { tier: "固い", roi: 93.5 },
+  tansho:      { tier: "固い", roi: 90.8 },
+  kakurenfuku: { tier: "固い", roi: 84.8 },
+  nirenfuku:   { tier: "勝負", roi: 82.4 },
+  sanrenfuku:  { tier: "勝負", roi: 80.1 },
+  sanrentan:   { tier: "夢",   roi: 79.4 },
+};
+function tierBadge(t) {
+  const v = BET_TIER[t];
+  if (!v) return "";
+  return `<span class="tier-badge" title="未見17,090レースでの実測回収率">`
+       + `${v.tier} ${v.roi.toFixed(0)}%</span>`;
 }
 
 // actual_payout は「100円あたりの払戻額」（オッズ3.6倍 → 360）。
@@ -107,7 +129,7 @@ function payoutOf(bet) {
 // 2026-08-23: 本ページの前日カードだけこの除外が抜けており、
 // 前日実績が 5/44、日別ページが 5/33 と食い違っていた（正しいのは 5/33）。
 // 除外の判定を1箇所にまとめて、同じ取りこぼしが起きないようにする。
-const CANDIDATE_RULES = ["market_blend", "shrink_adj", "top1_value"];
+const CANDIDATE_RULES = ["market_blend", "shrink_adj", "top1_value", "record"];
 function isCandidate(bet) {
   return !!bet && (CANDIDATE_RULES.includes(bet.rule)
     || (bet.recommended_amount || 0) === 0);
@@ -694,9 +716,11 @@ function buildBetCard(b) {
       <div class="bet-card__body">
         <div class="bet-card__combo">
           <span class="bet-type-label">${betTypeLabel(b.bet_type)}</span>
+          ${tierBadge(b.bet_type)}
           ${comboSpans(b.combination)}
         </div>
-        <span class="bet-card__amount">¥${(b.recommended_amount||0).toLocaleString()}</span>
+        <span class="bet-card__amount">${(b.recommended_amount||0) > 0
+          ? "¥" + (b.recommended_amount||0).toLocaleString() : ""}</span>
       </div>
       <div class="bet-card__foot">
         <span class="bet-card__stats">

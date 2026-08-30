@@ -12,11 +12,13 @@ from sqlalchemy import func as sa_func, or_ as sa_or
 #
 # ⚠️ 必ず複数形で判定すること。棄却した market_blend の43本が DB に残って
 # おり、単一の文字列で比べるとそれが本番ルールの成績に混ざる。
-CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)", "候補ルール(価値1点)")
+CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)", "候補ルール(価値1点)",
+                     "記録のみ(賭式検証)")
 # 見送り理由 → 画面と JSON で使うルール名
 CANDIDATE_RULE_OF = {"候補ルール(混合)": "market_blend",
                      "候補ルール(縮み補正)": "shrink_adj",
-                     "候補ルール(価値1点)": "top1_value"}
+                     "候補ルール(価値1点)": "top1_value",
+                     "記録のみ(賭式検証)": "record"}
 
 from src.ingestion.database import get_session, get_engine
 from src.ingestion.models import (

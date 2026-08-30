@@ -743,12 +743,18 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
 # 棄却した market_blend の43本が DB に残っており、単一の文字列で比べると
 # それが本番ルールの成績に混ざる。
 CANDIDATE_REASON = "候補ルール(価値1点)"
-CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)", "候補ルール(価値1点)")
-CANDIDATE_RULES = ("market_blend", "shrink_adj", "top1_value")
+# 「記録のみ(賭式検証)」は 2026-08-30 に賭式を6つへ増やしたときに追加した。
+# config の bet_types に無い賭式（単勝・複勝・拡連複・3連複・3連単）の行で、
+# 賭け金は付けない。候補ルールと同じく **損益には数えないが判定はする**ので
+# 同じ枠組みに載せる。
+CANDIDATE_REASONS = ("候補ルール(混合)", "候補ルール(縮み補正)", "候補ルール(価値1点)",
+                     "記録のみ(賭式検証)")
+CANDIDATE_RULES = ("market_blend", "shrink_adj", "top1_value", "record")
 # 見送り理由 → JSON の rule 名。DBの行とJSONの行を突き合わせるのに使う。
 _DB_REASON_TO_RULE = {"候補ルール(混合)": "market_blend",
                       "候補ルール(縮み補正)": "shrink_adj",
-                      "候補ルール(価値1点)": "top1_value"}
+                      "候補ルール(価値1点)": "top1_value",
+                      "記録のみ(賭式検証)": "record"}
 _RULE_TO_DB_REASON = {v: k for k, v in _DB_REASON_TO_RULE.items()}
 
 
@@ -1235,6 +1241,7 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
 
         candidates = []
         blend_picks = []
+        best_of_type: dict[str, dict] = {}   # 賭式ごとの「確率が最大の1点」
         cand_pool: list[dict] = []      # 候補ルールの材料（レース単位で1回判定）
         for combo in combinations:
             if allowed_types and combo["bet_type"] not in allowed_types:
@@ -1271,35 +1278,47 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     "market_prob": market.get(key),
                 })
 
-            # bet_type別の条件を適用する。
-            # ここを見ていなかったため、朝の predict では見送られた買い目が
-            # 日中の更新で復活していた（2026-08-11 実測: 確率7.2%/21.6% の
-            # 買い目が min_model_prob=0.30 を無視して JSON に載っていた）。
-            ov = overrides.get(combo["bet_type"], {})
-            lo = ov.get("min_odds", min_odds)
-            hi = ov.get("max_odds", max_odds)
-            if not (lo <= odds_val <= hi):
-                continue
-            if ov.get("min_model_prob") is not None and mp < ov["min_model_prob"]:
-                continue
-            if ov.get("max_model_prob") is not None and mp > ov["max_model_prob"]:
-                continue
-
-            ev = mp * odds_val
-            if ev >= ov.get("min_ev", min_ev):
-                candidates.append({
-                    "bet_type": combo["bet_type"],
+            # 賭式ごとに「確率が最大の1点」だけを残す。
+            #
+            # 2026-08-30 に賭式を6つへ広げたとき、ここは全組合せを EV 順に
+            # 並べて上位5本を取る作りだった。6賭式では上位5本が1つの賭式で
+            # 埋まりうるので、**賭式が丸ごと落ちる**。
+            # また画面に出す実測回収率（17,090レース・2窓）は「確率が最大の
+            # 1点」で測った値なので、選び方を測定と一致させる必要がある。
+            #
+            # R5（2連複）の挙動は実質変わらない。実測で1レース1本が98.9%
+            # （281レース中278）、複数だった3レースも確率最大＝EV最大だった。
+            key_bt = combo["bet_type"]
+            cur = best_of_type.get(key_bt)
+            if cur is None or mp > cur["model_prob"]:
+                best_of_type[key_bt] = {
+                    "bet_type": key_bt,
                     "combination": combo["combination"],
                     "model_prob": round(mp, 4),
                     "odds": odds_val,
-                    "expected_value": round(ev, 4),
-                    "_ev": ev,
-                })
+                    "expected_value": round(mp * odds_val, 4),
+                }
 
-        candidates.sort(key=lambda x: x["_ev"], reverse=True)
-        candidates = candidates[:max_bets]
-        for c in candidates:
-            del c["_ev"]
+        # **全賭式の1点を必ず残す。** 賭け金を付けるかどうかだけを分ける。
+        #
+        # 買う賭式が条件を外した日に行ごと消すと、その日はその賭式が画面から
+        # 消えて層の比較ができなくなる。また実測回収率は無条件の1点で測って
+        # いるので、記録を条件で間引くと数字の意味がずれる。
+        for bt, c in best_of_type.items():
+            buy = bt in buy_types
+            if buy:
+                ov = overrides.get(bt, {})
+                lo = ov.get("min_odds", min_odds)
+                hi = ov.get("max_odds", max_odds)
+                if not (lo <= c["odds"] <= hi):
+                    buy = False
+                elif ov.get("min_model_prob") is not None and c["model_prob"] < ov["min_model_prob"]:
+                    buy = False
+                elif ov.get("max_model_prob") is not None and c["model_prob"] > ov["max_model_prob"]:
+                    buy = False
+                elif c["expected_value"] < ov.get("min_ev", min_ev):
+                    buy = False
+            candidates.append({**c, "_buy": buy})
 
         # 候補ルール(top1_value)をレースに1回だけ当てる。
         # ①確率が最大の1点を選ぶ（オッズを見ない）②板から確定オッズを見込む
@@ -1357,9 +1376,14 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     "is_final_pick": race_id in finalize_race_ids,
                 }
                 for b in race_bets:
+                    # ⚠️ 賭け金を付けるのは「買う賭式かつ条件を満たした1点」だけ。
+                    # 2026-08-30 に賭式を6つへ増やしたとき、ここが全賭式に
+                    # fixed_amount を付ける作りのままで、記録だけのはずの
+                    # 3連単などにも500円が付いていた（画面上「買え」に見える）。
+                    is_buy = bool(b.pop("_buy", False))
                     new_bets.append({**common, **b,
-                                     "recommended_amount": fixed_amount,
-                                     "rule": "r5"})
+                                     "recommended_amount": fixed_amount if is_buy else 0,
+                                     "rule": "r5" if is_buy else "record"})
                 for b in race_blend:
                     # 検証中の候補。賭け金 0 で、画面でも別扱いにする。
                     new_bets.append({**common, **b,
