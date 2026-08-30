@@ -1077,9 +1077,16 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     # bet_type別の条件と、対象の買い式。これを見ていなかったため、
     # 朝の predict で見送った買い目や停止中の買い式が日中に復活していた。
     overrides = cfg_bet.get("bet_type_overrides", {})
-    _bt_map = {"2連単": "nirentan", "2連複": "nirenfuku",
-               "3連単": "sanrentan", "3連複": "sanrenfuku"}
-    allowed_types = {_bt_map.get(t, t) for t in cfg_bet.get("bet_types", [])}
+    # 対応表は src/models/plackett_luce.py に集約（賭式を増やすと片方だけ
+    # 直して静かに壊れる形だった）。⚠️ 旧版は単勝・拡連複・複勝を持っておらず、
+    # config に書いても素通りして無視されていた。
+    from src.models.plackett_luce import BET_TYPE_JP as _bt_map
+    # 買う賭式＋記録だけする賭式。どちらも買い目としては作り、
+    # 賭け金を出すかどうかだけを分ける（下の _paper 参照）。
+    _buy = [_bt_map.get(t, t) for t in cfg_bet.get("bet_types", [])]
+    _paper = [_bt_map.get(t, t) for t in cfg_bet.get("paper_bet_types", [])]
+    allowed_types = set(_buy) | set(_paper)
+    buy_types = set(_buy)
 
     # 検証中の候補ルール（operation.candidate_rule）。閾値は config に
     # 事前登録してある。ここで動かすと後から都合よく変えられるので読むだけ。
@@ -1182,6 +1189,25 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     odds_frames.append(sc.get_odds_nirentan(stadium_code, d, race_no))
                 except Exception as e:
                     logger.warning(f"niren odds失敗 {stadium_code} R{race_no}: {e}")
+            # 単勝と複勝は同じ oddstf ページなので、1回の取得で両方まかなえる
+            # （_fetch_raw がキャッシュするため通信は増えない）。
+            if "tansho" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_tansho(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"tansho odds失敗 {stadium_code} R{race_no}: {e}")
+            if "fukusho" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_fukusho(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"fukusho odds失敗 {stadium_code} R{race_no}: {e}")
+            # 拡連複は別ページ。⚠️ このページは当日しか出ないので、
+            # 日中に取れなかったぶんは二度と手に入らない。
+            if "kakurenfuku" in needed:
+                try:
+                    odds_frames.append(sc.get_odds_kakurenfuku(stadium_code, d, race_no))
+                except Exception as e:
+                    logger.warning(f"kakurenfuku odds失敗 {stadium_code} R{race_no}: {e}")
 
         if not odds_frames:
             return race_id, []

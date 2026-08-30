@@ -67,16 +67,18 @@ def generate_bets(
 
     # 買い目候補の生成: PL経由 or 独立モデル合成経由
     candidates = []
-    bt_to_db_name = {"単勝": "tansho", "2連単": "nirentan", "2連複": "nirenfuku",
-                      "3連単": "sanrentan", "3連複": "sanrenfuku"}
+    # 対応表は src/models/plackett_luce.py に集約した（賭式を増やすと
+    # 片方だけ直して静かに壊れる形だったため）
+    from src.models.plackett_luce import BET_TYPE_JP as bt_to_db_name
     # 記録だけしたい賭式（買わないが、後から検証できるよう残す）。
     # 判定に必要な本数は 2連複だけだと3週間かかるが、賭式を増やせば
     # 同じ日数で3倍のデータが貯まる。買うかどうかは is_pass で区別する。
     paper_types = [bt_to_db_name.get(t, t) for t in cfg.get("paper_bet_types", [])]
+    # 分岐の外で定義する。中で定義すると PL を使わない経路で未定義になる
+    wanted = [bt_to_db_name.get(t, t) for t in bet_types]
 
     if pl_probs:
         # Plackett-Luce の確率をそのまま使う (calibration_factor不要)
-        wanted = [bt_to_db_name.get(t, t) for t in bet_types]
         for db_name in list(dict.fromkeys(wanted + paper_types)):
             for combo in pl_probs.get(db_name, []):
                 candidates.append({
@@ -203,9 +205,12 @@ def generate_bets(
         #   2026-08-17 実測: 168レース中132レースがこれで消え、probs は
         #   36レース分しかなかった。1日6.6本の想定に対し候補は5日で1本。
         # 買う・買わないは is_pass で区別されるので、残しても損益には入らない。
-        _cand = (config.get("operation") or {}).get("candidate_rule") or {}
-        keep_bt = bt_to_db_name.get(_cand.get("bet_type", ""))
-        kept = cands_df[cands_df["bet_type"] == keep_bt] if keep_bt else cands_df.iloc[:0]
+        # 2026-08-30: 候補ルールの賭式だけ残す作りだったため、単勝・3連複・
+        # 3連単の行が「1本も買わないレース」で丸ごと落ちていた（同日実測:
+        # probs の単勝は168レース中27レース分しかなかった）。全賭式を記録して
+        # 層ごとに推奨を出す方針にしたので、**設定にある賭式は全部残す**。
+        kept = cands_df[cands_df["bet_type"].isin(wanted + paper_types)] \
+            if (wanted or paper_types) else cands_df
         if kept.empty:
             return _pass_df("全買い目が見送り条件に該当")
         kept = kept.copy()

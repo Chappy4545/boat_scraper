@@ -44,6 +44,25 @@ def scores_to_win_probs(scores: Sequence[float], temperature: float = 1.0) -> di
     return {k: float(p) for k, p in zip(keys, probs)}
 
 
+# 賭式の日本語名 → DB/JSON で使う名前。**ここが唯一の定義**。
+#
+# 以前は main.py と src/betting/ev_calculator.py に別々に書いてあり、
+# 賭式を増やすと片方だけ直して静かに壊れる形だった（このプロジェクトでは
+# 同じ形の重複が何度も事故になっている）。all_bet_probs が返すキーと
+# 対になるので、確率を作るこのモジュールに置く。
+BET_TYPE_JP = {
+    "単勝": "tansho",
+    "複勝": "fukusho",
+    "拡連複": "kakurenfuku",
+    "2連単": "nirentan",
+    "2連複": "nirenfuku",
+    "3連複": "sanrenfuku",
+    "3連単": "sanrentan",
+}
+# 逆引き（画面表示用）
+BET_TYPE_NAME = {v: k for k, v in BET_TYPE_JP.items()}
+
+
 def joint_prob_sanrentan(exp_scores: dict[int, float], a: int, b: int, c: int) -> float:
     """P(a 1着, b 2着, c 3着) を Plackett-Luce で計算。
 
@@ -78,6 +97,36 @@ def joint_prob_nirenfuku(exp_scores: dict[int, float], a: int, b: int) -> float:
     return joint_prob_nirentan(exp_scores, a, b) + joint_prob_nirentan(exp_scores, b, a)
 
 
+def prob_fukusho(exp_scores: dict[int, float], a: int) -> float:
+    """P(a が2着以内) = P(a 1着) + Σ_b P(b 1着)·P(a 2着 | b 1着)。
+
+    ボートレースは6艇立てなので複勝は2着以内。全艇の合計は 2.0 になる。
+    """
+    total = sum(exp_scores.values())
+    if total <= 0 or a not in exp_scores:
+        return 0.0
+    p = exp_scores[a] / total
+    for b in exp_scores:
+        if b == a:
+            continue
+        remain = total - exp_scores[b]
+        if remain > 0:
+            p += (exp_scores[b] / total) * (exp_scores[a] / remain)
+    return max(0.0, min(1.0, p))
+
+
+def joint_prob_kakurenfuku(exp_scores: dict[int, float], a: int, b: int) -> float:
+    """P(a と b がともに3着以内) = Σ_c P({a,b,c} が1-3着)。
+
+    拡連複（ワイド）。1レースに当たりが3組あるので全組の合計は 3.0 になる。
+    """
+    if a == b:
+        return 0.0
+    p = sum(joint_prob_sanrenfuku(exp_scores, a, b, c)
+            for c in exp_scores if c not in (a, b))
+    return max(0.0, min(1.0, p))
+
+
 def joint_prob_sanrenfuku(exp_scores: dict[int, float], a: int, b: int, c: int) -> float:
     """P({a, b, c} が1-3着) = 6順列の和。"""
     return sum(joint_prob_sanrentan(exp_scores, *perm) for perm in permutations([a, b, c]))
@@ -109,13 +158,28 @@ def all_bet_probs(scores: dict[int, float], temperature: float = 1.0) -> dict[st
     win_probs = scores_to_win_probs(scores, temperature)
     boats = sorted(scores.keys())
 
-    result = {"tansho": [], "nirentan": [], "nirenfuku": [], "sanrentan": [], "sanrenfuku": []}
+    result = {"tansho": [], "fukusho": [], "kakurenfuku": [],
+              "nirentan": [], "nirenfuku": [], "sanrentan": [], "sanrenfuku": []}
 
     # tansho
     for b in boats:
         result["tansho"].append({
             "combination": str(b),
             "model_prob": float(win_probs[b]),
+        })
+
+    # fukusho（2着以内）。合計 2.0
+    for b in boats:
+        result["fukusho"].append({
+            "combination": str(b),
+            "model_prob": prob_fukusho(exp_scores, b),
+        })
+
+    # kakurenfuku（2艇とも3着以内）。合計 3.0
+    for a, b in combinations(boats, 2):
+        result["kakurenfuku"].append({
+            "combination": f"{a}-{b}",
+            "model_prob": joint_prob_kakurenfuku(exp_scores, a, b),
         })
 
     # nirentan (順序あり)

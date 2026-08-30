@@ -707,6 +707,43 @@ class BoatRaceScraper(BaseScraper):
             })
         return pd.DataFrame(rows)
 
+    def get_odds_fukusho(self, stadium_code: str, race_date: date,
+                         race_no: int) -> pd.DataFrame:
+        """複勝: oddstf の table[2]。単勝と同じページなので通信は増えない。
+
+        ⚠️ 拡連複と同じくオッズは範囲表記（`1.0-1.1`）。どの艇と一緒に
+        2着以内へ入るかで配当が変わるため。odds 列には**下限（保守側）**を入れる。
+        """
+        html = self._fetch_raw(self._url("oddstf"), self._params(stadium_code, race_date, race_no))
+        soup = BeautifulSoup(html, "lxml")
+        tables = soup.find_all("table")
+        if len(tables) < 3:
+            return pd.DataFrame()
+        rows = []
+        for tr in tables[2].find_all("tr"):
+            tds = tr.find_all("td")
+            if len(tds) < 3:
+                continue
+            boat_txt = tds[0].get_text(strip=True)
+            odds_txt = tds[2].get_text(strip=True)
+            if not boat_txt.isdigit() or not odds_txt:
+                continue
+            try:
+                low = float(odds_txt.split("-")[0])
+            except (ValueError, TypeError):
+                continue
+            if low <= 0:
+                continue
+            rows.append({
+                "stadium_code": stadium_code,
+                "race_date": race_date,
+                "race_no": race_no,
+                "bet_type": "fukusho",
+                "combination": boat_txt,
+                "odds": low,
+            })
+        return pd.DataFrame(rows)
+
     def get_odds_kakurenfuku(self, stadium_code: str, race_date: date,
                              race_no: int) -> pd.DataFrame:
         html = self._fetch_raw(self._url("oddsk"), self._params(stadium_code, race_date, race_no))
