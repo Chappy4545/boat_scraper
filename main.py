@@ -696,6 +696,19 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
     _purge_raw_cache(config)
 
 
+# 確定オッズを毎日そろえる賭式。
+#
+# ⚠️ 2026-08-30 まで nirenfuku だけだった。そのため単勝・3連複・3連単は
+# 手で collect を回した日（8/22・8/25・8/29）にしか確定オッズが無く、
+# 8日中3日しか揃っていなかった。オッズは後から作れないので、
+# **取らなかった日はその賭式の検証標本が永久に失われる**。
+#
+# ユーザーの目標は「単勝・2連複・3連複・3連単で買い目を出す」ことなので、
+# 4賭式すべての確定オッズが要る。1賭式あたり1ページ／レースで、
+# 夜間に走るので当日の運用には影響しない。
+FINAL_ODDS_BET_TYPES = ("tansho", "nirenfuku", "sanrenfuku", "sanrentan")
+
+
 def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
     """その日の、確定オッズが揃っていないレースだけ取りに行く。"""
     import subprocess
@@ -705,7 +718,7 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
     if not script.exists():
         logger.warning("backfill_final_odds.py が見つかりません")
         return
-    for bt in ("nirenfuku",):
+    for bt in FINAL_ODDS_BET_TYPES:
         try:
             r = subprocess.run(
                 [_sys.executable, str(script), str(d), str(d),
