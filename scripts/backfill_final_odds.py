@@ -38,11 +38,18 @@ from src.utils.logger import get_logger           # noqa: E402
 logger = get_logger(__name__)
 
 # 賭式ごとの (取得メソッド名, 揃うべき通り数)
+#
+# ⚠️ kakurenfuku だけ**当日しか取れない**。他の賭式はレース後も確定値が
+# 公開され続けるので後日でも回収できるが、oddsk ページは翌日以降
+# テーブルごと消える（2026-08-30 実測: 7日前・7週間前とも 0件）。
+# つまり **その日のうちに取らないと永久に失われる**。
+# 夜間の collect_results から呼ばれる分は同日なので間に合う。
 KINDS = {
     "nirenfuku": ("get_odds_nirenfuku", 15),
     "tansho": ("get_odds_tansho", 6),
     "sanrenfuku": ("get_odds_sanrenfuku", 20),
     "sanrentan": ("get_odds_sanrentan", 120),
+    "kakurenfuku": ("get_odds_kakurenfuku", 15),
 }
 
 TARGETS = """

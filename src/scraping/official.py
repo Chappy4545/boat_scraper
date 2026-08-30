@@ -28,6 +28,10 @@ _URLS = {
     "odds3f":     "/owpc/pc/race/odds3f",
     "odds2tf":    "/owpc/pc/race/odds2tf",
     "oddstf":     "/owpc/pc/race/oddstf",     # 単勝・複勝
+    # 拡連複。⚠️ このページは**当日しか出ない**（2026-08-30 実測: 7日前は
+    # table ごと存在しない）。単勝の oddstf は後日でも確定値が残るが、
+    # こちらは残らないので、取らなかった日のオッズは永久に失われる。
+    "oddsk":      "/owpc/pc/race/oddsk",
     "raceresult": "/owpc/pc/race/raceresult",
     "index":      "/owpc/pc/race/index",
     "pay":        "/owpc/pc/race/pay",
@@ -701,6 +705,56 @@ class BoatRaceScraper(BaseScraper):
                 "combination": str(boat_no),
                 "odds": odds,
             })
+        return pd.DataFrame(rows)
+
+    def get_odds_kakurenfuku(self, stadium_code: str, race_date: date,
+                             race_no: int) -> pd.DataFrame:
+        html = self._fetch_raw(self._url("oddsk"), self._params(stadium_code, race_date, race_no))
+        return self._parse_odds_kakurenfuku(html, stadium_code, race_date, race_no)
+
+    def _parse_odds_kakurenfuku(self, html: str, stadium_code: str,
+                                race_date: date, race_no: int) -> pd.DataFrame:
+        """拡連複: oddsk の table[1]。**三角行列**で、オッズは範囲表記。
+
+        行は「相手の艇番」、列の対は (艇番, オッズ) で k 番目の対が艇 k+1 との組:
+
+            ['2', '1.6-1.9']                       → 1-2
+            ['3', '1.9-2.3', '3', '3.6-4.8']       → 1-3, 2-3
+            ['4', '1.5-1.8', '4', '3.2-4.4', ...]  → 1-4, 2-4, 3-4
+
+        ⚠️ 拡連複は「どの艇と一緒に3着以内に入るか」で配当が変わるため、
+        オッズが `1.6-1.9` のような**範囲**で出る。odds 列は1つしか無いので
+        **下限（保守側）**を入れる。期待値を出すときは低めに見積もることになる。
+        正確な結果は payouts に入っているので、成績の測定はそちらを使う。
+        """
+        soup = BeautifulSoup(html, "lxml")
+        tables = soup.find_all("table")
+        if len(tables) < 2:
+            return pd.DataFrame()          # 当日以外はテーブルごと出ない
+        rows = []
+        for tr in tables[1].find_all("tr")[1:]:
+            cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+            for k in range(len(cells) // 2):
+                b_txt, o_txt = cells[2 * k], cells[2 * k + 1]
+                if not b_txt.isdigit() or not o_txt:
+                    continue
+                a, b = k + 1, int(b_txt)
+                if a >= b:
+                    continue
+                try:
+                    low = float(o_txt.split("-")[0])
+                except (ValueError, TypeError):
+                    continue
+                if low <= 0:
+                    continue
+                rows.append({
+                    "stadium_code": stadium_code,
+                    "race_date": race_date,
+                    "race_no": race_no,
+                    "bet_type": "kakurenfuku",
+                    "combination": f"{a}-{b}",
+                    "odds": low,
+                })
         return pd.DataFrame(rows)
 
     def get_odds_nirentan(self, stadium_code: str, race_date: date, race_no: int) -> pd.DataFrame:

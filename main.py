@@ -706,7 +706,10 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
 # ユーザーの目標は「単勝・2連複・3連複・3連単で買い目を出す」ことなので、
 # 4賭式すべての確定オッズが要る。1賭式あたり1ページ／レースで、
 # 夜間に走るので当日の運用には影響しない。
-FINAL_ODDS_BET_TYPES = ("tansho", "nirenfuku", "sanrenfuku", "sanrentan")
+# ⚠️ kakurenfuku を先頭に置く。他の賭式はレース後も公開され続けるので後日でも
+# 回収できるが、拡連複の oddsk ページは翌日には消える。時間切れ（--max-minutes）
+# になったとき、取り返せないものから先に確保する。
+FINAL_ODDS_BET_TYPES = ("kakurenfuku", "tansho", "nirenfuku", "sanrenfuku", "sanrentan")
 
 
 def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
