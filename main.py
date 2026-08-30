@@ -1003,9 +1003,16 @@ def cmd_judge(target_date: date | None = None):
 
     logger.info(f"的中判定完了: {d} {judged}件")
 
-    # 判定後にエクスポートを更新
-    from src.export import export_day, export_performance, export_pdca
-    export_day(d)
+    # 判定後にエクスポートを更新。
+    #
+    # ⚠️ ここで export_day を呼んではいけない。あれは「DBの中身で JSON を
+    # 作り直す」もので、履歴DBに無いもの（予測・出走表・締切時刻・買い目）を
+    # null で上書きする。2026-08 の1週間で4回それで壊した
+    # （src/export.py の fill_results_into_json に経緯）。
+    # ローカルの仕事は「JSON を読んでDBへ取り込む」＋「結果だけ書き足す」。
+    from src.export import fill_results_into_json, export_performance, export_pdca
+    fill_results_into_json(d)
+    # performance / pdca は履歴DBからの集計なので、ここで作るのが正しい
     export_performance()
     export_pdca()
 

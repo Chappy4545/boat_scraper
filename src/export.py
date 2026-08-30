@@ -112,7 +112,18 @@ def json_race_id(race_date, stadium_code, race_no) -> int:
 
 
 # races JSON でレースごとに引き継ぐ項目。DB側が空のときだけ既存を使う。
-_RACE_DETAIL_KEYS = ("entries", "predictions")
+#
+# ⚠️ 2026-08-26 の修正では entries / predictions しか守っておらず、
+# 08-29 に **closing_time と grade が同じ経路で消えた**（156レース全部）。
+# ローカルが結果だけ collect して出走表を collect しなかった日は、DBに
+# 締切時刻が入らない。export はそれを忠実に null で書き、クラウドが朝に
+# 入れた値を潰す。締切時刻は refresh_odds が「確定させるか」を判断する要で、
+# 消えると買い目がいつまでも確定しない。
+#
+# 項目を列挙して守る方式は、増えるたびに同じ事故が起きる。
+# **DB側が空なら既存を使う**を既定にして、id や場のように必ずDBから来るものだけ
+# 除く。is_night は bool(None)=False で「無い」と区別できないので対象外。
+_RACE_KEEP_EXCLUDE = ("id", "race_date", "stadium", "race_no", "is_night")
 
 
 def _race_key(r: dict):
@@ -128,10 +139,11 @@ def _race_key(r: dict):
 
 
 def _keep_existing_race_details(races_path: Path, races_json: list[dict]) -> list[dict]:
-    """既存 races JSON の出走表・予測を、DB側が空のレースにだけ引き継ぐ。
+    """既存 races JSON の中身を、DB側が空のレースにだけ引き継ぐ。
 
     呼び出し側(export_day)に経緯を書いた。要点は「クラウドが書いた中身を
     ローカルの判定が空で上書きする」経路を塞ぐこと。
+    項目を列挙せず、_RACE_KEEP_EXCLUDE 以外はすべて対象にする。
     """
     if not races_path.exists():
         return races_json
@@ -144,22 +156,38 @@ def _keep_existing_race_details(races_path: Path, races_json: list[dict]) -> lis
         return races_json
 
     prev = {_race_key(r): r for r in existing if isinstance(r, dict)}
-    restored = 0
+    restored: dict[str, int] = {}
     for r in races_json:
         old = prev.get(_race_key(r))
         if not old:
             continue
-        for key in _RACE_DETAIL_KEYS:
-            if not r.get(key) and old.get(key):
-                r[key] = old[key]
-                restored += 1
+        for key, val in old.items():
+            if key in _RACE_KEEP_EXCLUDE:
+                continue
+            if not r.get(key) and val:
+                r[key] = val
+                restored[key] = restored.get(key, 0) + 1
     if restored:
-        logger.info(f"export: {races_path.name} の出走表/予測 {restored}件を既存から引き継ぎました")
+        detail = " ".join(f"{k}={n}" for k, n in sorted(restored.items()))
+        logger.info(f"export: {races_path.name} の空欄を既存から引き継ぎました（{detail}）")
     return races_json
 
 
 def export_day(target_date: date) -> dict:
-    """指定日の races / bets JSON を生成して docs/data/ に保存する。"""
+    """指定日の races / bets JSON を **DBの中身で作り直す**。
+
+    ⚠️ **繋いでいるDBにその日のデータが揃っているときだけ呼ぶこと。**
+    正しい呼び出し元はクラウドの predict_cloud（当日ぶんの使い捨てSQLite）だけ。
+
+    ローカルの履歴DBは予測も買い目も持たず、出走表や締切時刻が無い日もある。
+    そこでこれを呼ぶと、欠けている分が null で上書きされて記録が壊れる
+    （2026-08 の1週間で4回発生）。ローカルからは
+    `fill_results_into_json()` を使うこと。そちらは書き足すだけで壊せない。
+
+    引き継ぎ（_keep_existing_race_details）は最後の保険であって、
+    これがあるから安全という意味ではない。守れるのは「既存 JSON にある項目」
+    だけで、クラウドが一度も書いていない日は守れない。
+    """
     _ensure_data_dir()
     d = target_date
 
@@ -332,6 +360,126 @@ def export_day(target_date: date) -> dict:
     bets_path.write_text(json.dumps(bets_json, ensure_ascii=False, indent=None), encoding="utf-8")
     logger.info(f"export: {races_path.name} ({len(races_json)}件), {bets_path.name} ({len(bets_json)}件)")
     return {"races": len(races_json), "bets": len(bets_json)}
+
+
+def fill_results_into_json(target_date: date) -> dict:
+    """既存の races / bets JSON に**結果だけを書き足す**（ローカルの判定用）。
+
+    なぜ export_day を使わないか
+    ---------------------------
+    export_day は「DBの中身で JSON を作り直す」。クラウド(predict_cloud)の
+    使い捨てSQLite はその日のデータが揃っているので正しく書けるが、
+    **ローカルの履歴DBは中身が欠けている**:
+
+        - 予測が無い（2026-08-23 に予測をクラウドの仕事にした）
+        - 出走表が無い日がある（結果だけ collect した日）
+        - 締切時刻・グレードが無い日がある（同上）
+        - 買い目そのものが無い（クラウドが作るので）
+
+    そこへ export_day を走らせると、欠けている分がそのまま null で上書きされる。
+    2026-08 の1週間で4回起きた:
+
+        08-26 出走表と予測が全消し → タップしても選手も確率も出ない
+        08-26/27 採番の食い違いで昼から買い目生成が停止
+        08-28 判定が途中で切れて1日ぶんDBに入らず
+        08-29 締切時刻とグレードが全消し → 買い目が確定しない
+
+    消えた項目を1つずつ守る方式では追いつかなかった（entries → predictions →
+    closing_time → grade と、そのつど別の項目が消えた）。
+
+    そこで役割を分けた:
+
+        クラウド … JSON を作る（データが揃っているのはこちらだけ）
+        ローカル … JSON を読んで履歴DBへ取り込み、**結果だけ書き足す**
+
+    この関数は行を消さず、項目を空にせず、採番も触らない。**増えるだけ**。
+    だから履歴DBに何が欠けていても JSON を壊せない。
+
+    実測（2026-08-27〜29）でクラウドの最終版は全行に is_hit と着順が入っており、
+    bets 側はそもそも書き足す必要がない。races の着順だけがローカル由来。
+
+    戻り値: 書き足した件数。
+    """
+    _ensure_data_dir()
+    d = target_date
+    races_path = DATA_DIR / f"races_{d}.json"
+    bets_path = DATA_DIR / f"bets_{d}.json"
+    filled = {"races_order": 0, "bets_order": 0, "bets_judged": 0}
+
+    if not races_path.exists() and not bets_path.exists():
+        # クラウドが1度も書いていない日。ここだけは作るしかない。
+        logger.warning(f"export: {d} の JSON が無いので export_day で作ります"
+                       f"（クラウドが動かなかった日）")
+        return export_day(d)
+
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race, RaceResult, Stadium
+
+    with get_session() as session:
+        rows = (
+            session.query(Race, Stadium)
+            .join(Stadium, Race.stadium_id == Stadium.id)
+            .filter(Race.race_date == d).all()
+        )
+        # 突き合わせは場名とレース番号。JSON の採番は当てにしない（_race_key と同じ理由）
+        key_of = {r.id: (s.name, r.race_no) for r, s in rows}
+        order_by_key: dict[tuple, list[int]] = {}
+        if key_of:
+            for rid, _o, boat in (
+                session.query(RaceResult.race_id, RaceResult.arrival_order,
+                              RaceResult.boat_no)
+                .filter(RaceResult.race_id.in_(list(key_of)))
+                .order_by(RaceResult.race_id, RaceResult.arrival_order).all()
+            ):
+                if boat is not None:
+                    order_by_key.setdefault(key_of[rid], []).append(int(boat))
+
+        judged_by_key: dict[tuple, tuple] = {}
+        for b, r, s in (
+            session.query(Bet, Race, Stadium)
+            .join(Race, Bet.race_id == Race.id)
+            .join(Stadium, Race.stadium_id == Stadium.id)
+            .filter(Race.race_date == d, Bet.is_hit != None).all()   # noqa: E711
+        ):
+            judged_by_key[(s.name, r.race_no, b.bet_type, b.combination)] = (
+                bool(b.is_hit), b.actual_payout)
+
+    if races_path.exists() and order_by_key:
+        races = json.loads(races_path.read_text(encoding="utf-8"))
+        for r in races:
+            if r.get("result_order"):
+                continue
+            order = order_by_key.get((r.get("stadium"), r.get("race_no")))
+            if order:
+                r["result_order"] = order
+                filled["races_order"] += 1
+        if filled["races_order"]:
+            races_path.write_text(json.dumps(races, ensure_ascii=False, indent=None),
+                                  encoding="utf-8")
+
+    if bets_path.exists():
+        bets = json.loads(bets_path.read_text(encoding="utf-8"))
+        changed = False
+        for b in bets:
+            rkey = (b.get("stadium_name"), b.get("race_no"))
+            if not b.get("result_order") and order_by_key.get(rkey):
+                b["result_order"] = order_by_key[rkey]
+                filled["bets_order"] += 1
+                changed = True
+            if b.get("is_hit") is None:
+                got = judged_by_key.get((*rkey, b.get("bet_type"), b.get("combination")))
+                if got is not None:
+                    b["is_hit"], b["actual_payout"] = got
+                    filled["bets_judged"] += 1
+                    changed = True
+        if changed:
+            bets_path.write_text(json.dumps(bets, ensure_ascii=False, indent=None),
+                                 encoding="utf-8")
+
+    logger.info(
+        f"export: {d} の結果を書き足しました（races着順 {filled['races_order']} / "
+        f"bets着順 {filled['bets_order']} / bets判定 {filled['bets_judged']}）")
+    return filled
 
 
 def export_meta(source: str = "local") -> None:
