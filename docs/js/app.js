@@ -14,7 +14,8 @@ const state = {
     bets:  { stadium: null, betType: null },
     races: { stadium: null, grade: null },
   },
-  betsSort: "ev",       // "ev" | "race"
+  betsSort: "prob",     // "prob" | "ev" | "race"（買うべきは確率で選ぶので既定は確率）
+  betsView: "buy",      // "buy" = 買うべきだけ / "all" = 総当たり812件
   betsShowAll: false,   // 買い目一覧の表示上限を外したか（6賭式で1日800本超）
   evInfoOpen: false,
   _racesCache: [],
@@ -147,6 +148,47 @@ const BET_TIER = {
   sanrenfuku:  { tier: "勝負", roi: 80.1 },
   sanrentan:   { tier: "夢",   roi: 79.4 },
 };
+// ── 「買うべき」の絞り込み ──
+//
+// 画面は 144レース × 6賭式 = 812件の総当たりを出していた。推奨ではなく一覧で、
+// この中から買うものを選べない。**何で絞るか**を 2026-08-31 に測った
+// （`scripts/prob_filter.py`、17,090レース・独立2窓・オッズを使わない）。
+//
+// ⚠️ EV で絞ってはいけない。EV>=2.0 の回収率は 54.1% で、**絞るほど悪化**する
+// （2026-08-30 実測）。EV はオッズを含むので、オッズが上振れした組合せを
+// 選んでしまう。
+//
+// **モデルの確率で絞ると逆に良くなる。** 確率はオッズを一切見ないので、
+// その選択バイアスが乗らない。両窓とも「全部買う」を上回った条件だけ採用:
+//
+//     賭式      全部買う(A/B)   採用した条件        実測(A/B)
+//     複勝      95.5/93.5     p>=0.945        96.6/96.7   ⭐最良
+//     拡連複    85.9/84.8     p>=0.778        91.0/88.5
+//     2連複     85.3/82.4     p>=0.435        90.7/84.6
+//     単勝      92.1/90.8     ―（窓Aで下回る）
+//     3連複     80.7/80.1     ―（最上位帯が4番目に劣る）
+//     3連単     78.5/79.4     ―（窓A100.1%だが窓B76.9%＝雑音）
+//
+// ⚠️ **どれも 100% 未満。** 「買うべき」は「最も損が小さい」の意味であって、
+// 勝てるという意味ではない。画面にも必ず実測値を併記すること。
+const BUY_FILTER = {
+  fukusho:     { minProb: 0.945, roi: [96.6, 96.7] },
+  kakurenfuku: { minProb: 0.778, roi: [91.0, 88.5] },
+  nirenfuku:   { minProb: 0.435, roi: [90.7, 84.6] },
+};
+// この条件で買ったときの実測回収率の幅（悪い方の窓〜良い方の窓）
+const BUY_FILTER_ROI = [84.6, 96.7];
+
+// 買うべき一覧に出すか。
+// ⚠️ 実際に賭け金が付いている買い目は、条件に関係なく必ず出す。
+// 絞り込みで自分が買った買い目が消えるのが一番まずい。
+function isRecommended(bet) {
+  if (!bet) return false;
+  if (isPurchased(bet)) return true;
+  const f = BUY_FILTER[bet.bet_type];
+  return !!f && (bet.model_prob || 0) >= f.minProb;
+}
+
 function tierBadge(t) {
   const v = BET_TIER[t];
   if (!v) return "";
@@ -647,12 +689,37 @@ const EV_EXPLAIN_HTML = `
 
 function renderBets() {
   // 一覧は「買う + 推奨のみ」。成績用の _betsCache と取り違えないこと。
-  const bets = state._listCache || [];
+  const all = state._listCache || [];
+  // 既定は「買うべき」だけ。総当たり812件では買うものを選べない。
+  const bets = state.betsView === "all" ? all : all.filter(isRecommended);
   const f = state.filters.bets;
 
   // ── フィルター＆ソートエリア ──
   const filterArea = document.getElementById("bets-filter-area");
   filterArea.innerHTML = "";
+
+  // 「買うべき」か「すべて」か。既定は買うべき。
+  // 総当たり812件を並べても、そこから買うものを選べない。
+  const nBuy = all.filter(isRecommended).length;
+  const viewRow = document.createElement("div");
+  viewRow.className = "view-toggle";
+  viewRow.innerHTML = `
+    <button class="view-btn${state.betsView === "buy" ? " active" : ""}" data-view="buy">
+      買うべき <span class="view-btn__n">${nBuy}</span></button>
+    <button class="view-btn${state.betsView === "all" ? " active" : ""}" data-view="all">
+      すべて <span class="view-btn__n">${all.length}</span></button>`;
+  filterArea.appendChild(viewRow);
+
+  // ⚠️ 「買うべき」でも損益分岐は超えていない。必ず実測値を併記する。
+  if (state.betsView === "buy") {
+    const note = document.createElement("div");
+    note.className = "buy-note";
+    note.innerHTML =
+      `モデルの確率が高い順に、実測で「全部買う」を上回った条件だけ。`
+      + `<strong>実測 ${BUY_FILTER_ROI[0]}〜${BUY_FILTER_ROI[1]}%</strong>`
+      + `（17,090レース・独立2窓）。<strong>まだ100%未満です。</strong>`;
+    filterArea.appendChild(note);
+  }
 
   // EV説明トグル
   const infoRow = document.createElement("div");
@@ -662,6 +729,7 @@ function renderBets() {
       <span>EVとは？</span> <span id="ev-info-arrow">${state.evInfoOpen ? "▲" : "▼"}</span>
     </button>
     <div class="sort-toggle">
+      <button class="sort-btn${state.betsSort === "prob" ? " active" : ""}" data-sort="prob">確率順</button>
       <button class="sort-btn${state.betsSort === "ev" ? " active" : ""}" data-sort="ev">EV順</button>
       <button class="sort-btn${state.betsSort === "race" ? " active" : ""}" data-sort="race">開催順</button>
     </div>`;
@@ -706,6 +774,17 @@ function renderBets() {
       renderBets();
     });
   });
+  filterArea.querySelectorAll(".view-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.betsView = btn.dataset.view;
+      // 表示を切り替えたら絞り込みも上限も戻す。前の表示で選んだ賭式が
+      // 新しい表示に無いと「該当なし」になって理由が分からない。
+      state.filters.bets.betType = null;
+      state.filters.bets.stadium = null;
+      state.betsShowAll = false;
+      renderBets();
+    });
+  });
 
   // ── フィルター適用 ──
   let filtered = bets;
@@ -713,7 +792,18 @@ function renderBets() {
   if (f.stadium) filtered = filtered.filter(b => b.stadium_name === f.stadium);
 
   // ── ソート ──
+  // 「買うべき」は確率で選んでいるので、既定の並びも確率にする。
+  // EV順にすると「EVで選んでいる」ように見えて、実測（EVで絞ると悪化）と
+  // 食い違うメッセージになる。
   const bySort = (a, b) => {
+    if (state.betsSort === "prob") {
+      // 賭式ごとに確率の水準が違うので、閾値からの余裕で比べる。
+      // 生の確率順にすると複勝ばかりが上に来る。
+      const m = x => (x.model_prob || 0) - (BUY_FILTER[x.bet_type] || {}).minProb;
+      const d = (m(b) || 0) - (m(a) || 0);
+      if (d) return d;
+      return (b.model_prob || 0) - (a.model_prob || 0);
+    }
     if (state.betsSort === "ev") return (b.expected_value || 0) - (a.expected_value || 0);
     if (a.stadium_name !== b.stadium_name) return a.stadium_name.localeCompare(b.stadium_name, "ja");
     if (a.race_no !== b.race_no) return a.race_no - b.race_no;

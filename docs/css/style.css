@@ -1422,6 +1422,26 @@ body {
 
 /* 賭け金が付かない「推奨のみ」。金額欄が空だと、金額の付く買い目と
    見分けがつかず「なぜこれは0円なのか」が分からない。2026-08-31 追加。 */
+/* 「買うべき」/「すべて」の切替。既定は買うべき。
+   総当たり812件を並べても、そこから買うものを選べない。2026-08-31 追加。 */
+.view-toggle{
+  display:flex; gap:.4rem; padding:.5rem 0 .35rem;
+}
+.view-btn{
+  flex:1; padding:.5rem .6rem; border-radius:.5rem; cursor:pointer;
+  background:var(--surface); color:var(--muted);
+  border:1px solid var(--surface2);
+  font-size:.82rem; font-family:inherit; font-weight:600;
+}
+.view-btn.active{
+  background:var(--accent); color:#fff; border-color:var(--accent);
+}
+.view-btn__n{ font-weight:400; opacity:.85; margin-left:.2rem; }
+.buy-note{
+  font-size:.72rem; color:var(--muted); line-height:1.5;
+  padding:.1rem .1rem .4rem;
+}
+
 /* 表示EVの隣に出す「実質EV」。買う時点のオッズは締切までに縮むので、
    EV はそのぶん過大。実測で割り戻した値を必ず併記する。2026-08-31 追加。 */
 .ev-real{

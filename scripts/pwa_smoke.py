@@ -108,13 +108,32 @@ def run(d: str, shot: str | None) -> int:
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
 
         page.goto(f"{base}/index.html?d={d}", wait_until="networkidle")
-        # 画面の日付を目的の日に合わせる（既定は今日）
+        # 画面の日付を目的の日に合わせる（既定は今日）。
+        # 一覧の突き合わせは「すべて」表示で行う（既定は「買うべき」で絞られる）。
         page.evaluate(
-            "d => { state.date = d; state.betsShowAll = true; loadBets(); }", d)
+            "d => { state.date = d; state.betsShowAll = true;"
+            "       state.betsView = 'all'; loadBets(); }", d)
         page.wait_for_function(
             "() => { const e = document.getElementById('bet-list');"
             "  return e && !e.textContent.includes('読込中'); }", timeout=20000)
         page.wait_for_timeout(600)
+
+        # 「買うべき」表示の中身も見る。ここが 0 だと画面が空になる。
+        buy = page.evaluate("""() => {
+            state.betsView = 'buy'; state.betsShowAll = true; renderBets();
+            const cards = [...document.querySelectorAll('#bet-list .bet-card')];
+            const r = {
+              n: cards.length,
+              types: [...new Set([...document.querySelectorAll(
+                '#bet-list .bet-type-label')].map(e => e.textContent.trim()))].sort(),
+              // 賭け金が付いた買い目が絞り込みで消えていないか
+              paid: (state._listCache || []).filter(isPurchased).length,
+              paidShown: (state._listCache || [])
+                .filter(b => isPurchased(b) && isRecommended(b)).length,
+            };
+            state.betsView = 'all'; renderBets();
+            return r;
+        }""")
 
         got = page.evaluate("""() => ({
             cards: document.querySelectorAll('#bet-list .bet-card').length,
@@ -151,13 +170,22 @@ def run(d: str, shot: str | None) -> int:
         ng.append(f"画面に出た賭式 {got['types']} / 出るはず {want_types}")
     if got["cards"] != exp["n_displayable"]:
         ng.append(f"カード {got['cards']} 枚 / {exp['n_displayable']} 枚")
+    # ⚠️ 賭け金が付いた買い目が「買うべき」から漏れてはいけない。
+    # 自分が買った買い目が絞り込みで消えるのが一番まずい。
+    if buy["paid"] != buy["paidShown"]:
+        ng.append(f"賭け金つきの買い目が「買うべき」から漏れている: "
+                  f"{buy['paid'] - buy['paidShown']}本")
+    if exp["n_displayable"] >= 100 and buy["n"] == 0:
+        ng.append("「買うべき」が0件（画面が空になる）")
     for e in errors:
         ng.append(e)
 
     print(f"日付        {d}")
     print(f"JSON        全{exp['n_all']}本 → 表示{exp['n_displayable']} / "
           f"買う{exp['n_purchased']} / 投資¥{exp['invested']:,}")
-    print(f"カード      {got['cards']} 枚")
+    print(f"カード      {got['cards']} 枚（すべて表示）")
+    print(f"買うべき    {buy['n']} 枚  {' '.join(buy['types']) or '(なし)'}"
+          f"  ／ 賭け金つき {buy['paidShown']}/{buy['paid']} 本を含む")
     print(f"賭式        {' '.join(got['types']) or '(なし)'}")
     for i, bar in enumerate(got["chips"]):
         print(f"チップ{i + 1}     {' | '.join(bar[:9])}"
