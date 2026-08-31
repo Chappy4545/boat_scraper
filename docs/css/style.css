@@ -1419,3 +1419,20 @@ body {
   border:1px solid var(--surface2); border-radius:.6rem;
   font-size:.68rem; color:var(--muted); white-space:nowrap;
 }
+
+/* 賭け金が付かない「推奨のみ」。金額欄が空だと、金額の付く買い目と
+   見分けがつかず「なぜこれは0円なのか」が分からない。2026-08-31 追加。 */
+.amount-record{
+  font-size:.7rem; color:var(--muted); font-weight:400; white-space:nowrap;
+}
+
+/* 買い目一覧の表示上限を外すボタン。6賭式で1日800本を超えるため、
+   先頭60件だけ描いて残りはここから開く。 */
+.show-more{
+  display:block; width:100%; margin:.6rem 0 .2rem; padding:.6rem;
+  background:var(--surface); color:var(--text);
+  border:1px solid var(--surface2); border-radius:.5rem;
+  font-size:.82rem; font-family:inherit; cursor:pointer;
+}
+.show-more:hover{ background:var(--surface2); }
+#bet-list .show-more{ grid-column: 1 / -1; }

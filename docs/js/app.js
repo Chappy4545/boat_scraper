@@ -11,13 +11,16 @@ const state = {
   page: "bets",
   date: todayStr(),
   filters: {
-    bets:  { stadium: null },
+    bets:  { stadium: null, betType: null },
     races: { stadium: null, grade: null },
   },
   betsSort: "ev",       // "ev" | "race"
+  betsShowAll: false,   // 買い目一覧の表示上限を外したか（6賭式で1日800本超）
   evInfoOpen: false,
   _racesCache: [],
-  _betsCache:  [],
+  _betsCache:  [],      // 成績用（買った買い目だけ）
+  _listCache:  [],      // 画面用（買う + 推奨のみ）
+  _trialCache: [],      // 隠している検証行
   // 検証モード（賭けずに記録だけしている状態）。meta.json から入る。
   // 収支タブは買い目タブを開かずに見られるので、起動時に一度読んでおく。
   _paper: false,
@@ -58,15 +61,25 @@ function showToast(msg, ms = 2500) {
 }
 
 // ── EV カラー ──
-// 実測(未見データ2期間)の EV帯別 回収率に合わせた段階。
-//   1.2〜1.5 → 100〜120% / 1.5〜2.0 → 126〜138% / 2.0〜3.0 → 142〜174% / 3.0〜 → 239〜280%
-// 旧実装は 1.5 以上を最上位にしていたため、ほぼ全ての買い目が最も派手な色になり
-// 「全部目立つ＝何も目立たない」状態だった。本当に良いものだけを目立たせる。
+// ⚠️ 2026-08-31 に反転させた。それまでは「EVが高いほど派手」で、
+// EV3.0以上に「実測 回収率 239〜280%」と書いていた。
+// あの数字は**確定オッズ（レース後にしか分からない値）**で測ったもので、
+// 8/30 に締切前の板だけで測り直したら逆になった（1,032レース）:
+//
+//     全部買う      75.0%   （無作為 74.2%）
+//     EV 1.0以上    71.6%
+//     EV 1.5以上    63.4%
+//     EV 2.0以上    54.1%   ← 画面には142〜174%と出ていた
+//     EV 2.5以上    48.9%
+//
+// **絞るほど単調に悪化する。** 板の高オッズは妙味ではなく雑音で、締切までに
+// 縮む。高EVを目立たせるのは「最も損な買い目を最も目立たせる」ことなので、
+// 色の向きを実測に合わせる。→ memory: project_model_has_no_edge
 function evColor(ev) {
-  if (ev >= 3.0) return "#ff7043";   // 実測で飛び抜けて良い帯
-  if (ev >= 2.0) return "#ffb74d";
-  if (ev >= 1.5) return "#ffd54f";
-  return "#90a4ae";                   // 標準帯は退かせる（muted）
+  if (ev >= 2.5) return "#e57373";   // 実測 48.9%。最も悪い＝警告色
+  if (ev >= 2.0) return "#ffb74d";   // 54.1%
+  if (ev >= 1.5) return "#ffd54f";   // 63.4%
+  return "#90a4ae";                   // 71.6%。相対的には最もまし
 }
 
 // ── バッジ生成 ──
@@ -123,16 +136,43 @@ function payoutOf(bet) {
   if (!bet || bet.actual_payout == null) return 0;
   return Math.round((bet.recommended_amount || 0) * bet.actual_payout / 100);
 }
-// 検証中の候補ルール（賭け金0で記録だけしている買い目）。
-// 成績にも件数にも混ぜてはいけない。判定だけはされるので is_hit が入り、
-// 素通しにすると「買っていない買い目」が的中率の分母に乗る。
-// 2026-08-23: 本ページの前日カードだけこの除外が抜けており、
-// 前日実績が 5/44、日別ページが 5/33 と食い違っていた（正しいのは 5/33）。
-// 除外の判定を1箇所にまとめて、同じ取りこぼしが起きないようにする。
+// ── 買い目の3分類 ──
+// ⚠️ 「成績に入れるか」と「画面に出すか」は別の問い。
+// 2026-08-31 まではこれを1つの関数(isCandidate)で兼ねていた。そのため
+// 8/30 に6賭式へ広げたとき、賭け金0で記録している単勝・複勝・拡連複・
+// 3連複・3連単が **画面からも消え**、2連複しか見えなくなった。
+// 787本を生成しながら1本も表示していない状態が丸一日続いた。
+//
+//   買う      賭け金>0 かつ検証ルールでない。成績に入り、画面にも出る
+//   推奨のみ  rule="record"。6賭式の推奨。画面には出すが成績には入れない
+//   検証行    market_blend / shrink_adj / top1_value。同じレース・同じ賭式に
+//             別ルールで重複する行なので、画面にも成績にも出さない
+//
+// 成績から外す理由（2026-08-23）: 判定だけはされるので is_hit が入り、
+// 素通しにすると「買っていない買い目」が的中率の分母に乗る。前日カードだけ
+// この除外が抜けており、前日実績 5/44 と日別ページ 5/33 が食い違っていた。
+// ⚠️ CANDIDATE_RULES は main.py の同名定数と一致していること。
+// リテラルの配列のまま書く（tests/test_pwa_cache_version.py が正規表現で
+// 読み、main.py とズレていないかを見張っている）。
 const CANDIDATE_RULES = ["market_blend", "shrink_adj", "top1_value", "record"];
-function isCandidate(bet) {
-  return !!bet && (CANDIDATE_RULES.includes(bet.rule)
-    || (bet.recommended_amount || 0) === 0);
+const RECORD_RULE = "record";
+const TRIAL_RULES = CANDIDATE_RULES.filter(r => r !== RECORD_RULE);
+const TRIAL_RULE_LABEL = {
+  market_blend: "市場7:モデル3の混合（2026-08-24 棄却）",
+  shrink_adj:   "オッズの縮み補正",
+  top1_value:   "確率最大の1点 × EV2.0",
+};
+
+// 成績（損益・回収率・的中率）に入れてよい買い目か。
+// 賭け金が付いていても検証ルールなら入れない（8/30 に record へ 500円が
+// 付くバグがあり、二重の防波堤として rule も見る）。
+function isPurchased(bet) {
+  return !!bet && (bet.recommended_amount || 0) > 0
+    && !CANDIDATE_RULES.includes(bet.rule);
+}
+// 買い目一覧に出してよい買い目か。検証行だけを隠す。
+function isDisplayable(bet) {
+  return !!bet && !TRIAL_RULES.includes(bet.rule);
 }
 function bn(no) {
   return `<span class="bn bn-${no}">${no}</span>`;
@@ -144,13 +184,17 @@ function comboSpans(combination) {
 }
 
 // ── フィルターバー ──
-function buildFilterBar(items, getKey, activeVal, onSelect, allLabel = "すべて") {
+// order を渡すとその順に並べる（渡さなければ従来どおり名前順）。
+// 賭式は「固い→夢」の意味のある並びがあり、名前順にすると層が読めない。
+function buildFilterBar(items, getKey, activeVal, onSelect, allLabel = "すべて", order = null) {
   const counts = {};
   items.forEach(item => {
     const k = getKey(item) || "—";
     counts[k] = (counts[k] || 0) + 1;
   });
-  const keys = Object.keys(counts).sort();
+  const keys = order
+    ? order.filter(k => counts[k])          // 出ていない賭式のチップは出さない
+    : Object.keys(counts).sort();
 
   const chips = [`<button class="filter-chip${activeVal === null ? " active" : ""}" data-val="">
     ${allLabel} <span class="filter-chip__count">${items.length}</span>
@@ -255,11 +299,14 @@ async function loadBets() {
       // 前夜のデイリーチェック。異常があったときだけ知らせる。
       api(`data/health.json`).catch(() => null),
     ]);
-    // 検証中の候補ルールの買い目は、買う買い目と混ぜない。
-    // 賭け金 0 で記録だけしているものなので、一覧に並べると紛らわしい。
+    // 3分類（isPurchased / isDisplayable の説明を参照）。
+    // _betsCache = 成績用（買った買い目だけ）。day-panel と前日カードが使う。
+    // _listCache = 画面用（買う + 推奨のみ）。買い目一覧が使う。
+    // _trialCache = 隠している検証行。件数だけバナーで知らせる。
     const all = bets || [];
-    state._candCache = all.filter(isCandidate);
-    state._betsCache = all.filter(b => !isCandidate(b));
+    state._betsCache  = all.filter(isPurchased);
+    state._listCache  = all.filter(isDisplayable);
+    state._trialCache = all.filter(b => TRIAL_RULES.includes(b.rule));
     state._racesCache = races;
     state._paper = !!(meta && meta.paper_mode);
     state._health = health;
@@ -278,7 +325,10 @@ async function loadBets() {
     renderDayPanel(state.date, state._betsCache, refreshText);
     renderYesterdayResult(yDate, yBets);
 
-    if (!state._betsCache.length) {
+    // 一覧に出すものが1本も無いときだけ「買い目なし」。買う買い目が0でも
+    // 推奨（賭け金0）が出ていれば見せる。ここを _betsCache で見ていたため、
+    // 8/30 は推奨787本を持ちながら「推奨買い目はありません」を出しかねなかった。
+    if (!state._listCache.length) {
       document.getElementById("bets-filter-area").innerHTML = "";
       document.getElementById("bets-summary").innerHTML = "";
       // レースはあるのに買い目が無い＝条件を満たさなかった日（正常）。
@@ -332,16 +382,21 @@ function renderHealthBanner(isToday, bets, races, meta) {
 
   if (meta && meta.paper_mode) parts.push(paperNotice());
 
-  // 検証中の候補ルールが何本出ているか。買い目一覧には載せていないので、
-  // ここで件数だけ知らせないと動いていることが分からない。
-  const cand = state._candCache || [];
-  if (cand.length) {
-    const fin = cand.filter(b => b.is_final_pick).length;
+  // 検証中のルールが何本出ているか。これらは同じレース・同じ賭式に別ルールで
+  // 重複する行なので一覧には載せていない。件数だけ知らせないと、動いているのか
+  // 止まっているのかが分からない。
+  // ⚠️ ここは以前「市場7:モデル3の混合ルール」と決め打ちで書いていたが、
+  // その混合ルールは 2026-08-24 に棄却済みで、実際に出ているのは別ルール
+  // だった。ルール名は必ずデータから作る。
+  const trial = state._trialCache || [];
+  if (trial.length) {
+    const names = [...new Set(trial.map(b => b.rule))]
+      .map(r => TRIAL_RULE_LABEL[r] || r).join(" / ");
     parts.push(`<div class="notice notice--quiet" role="note">
-      <span class="notice__icon" aria-hidden="true">候補</span>
-      <div><strong>検証中のルールが ${cand.length} 本</strong>
-      <div class="notice__body">市場7:モデル3の混合ルール。買い目一覧には載せていません
-      （賭け金0で記録のみ）。${fin ? `うち締切前に確定 ${fin} 本。` : ""}</div></div>
+      <span class="notice__icon" aria-hidden="true">検証</span>
+      <div><strong>検証中のルールが ${trial.length} 本</strong>
+      <div class="notice__body">${names}。買う買い目と重複するため一覧には
+      載せていません（賭け金0で記録のみ）。</div></div>
     </div>`);
   }
 
@@ -466,7 +521,7 @@ function renderDayPanel(dateStr, bets, refreshText = "") {
         </div>
         <div class="stat">
           <div class="stat__val">${yen(settledInv)}</div>
-          <div class="stat__lab">投資</div>
+          <div class="stat__lab">投資（確定分）</div>
         </div>
       </div>
       ${sub}
@@ -475,9 +530,9 @@ function renderDayPanel(dateStr, bets, refreshText = "") {
 
 function renderYesterdayResult(yDate, allBets) {
   const el = document.getElementById("yesterday-result");
-  // 買った買い目だけを見る。候補ルールは賭け金0で記録しているだけなので、
+  // 買った買い目だけを見る。推奨のみ・検証行は賭け金0で記録しているだけなので、
   // 混ぜると的中率の分母が膨らむ（日別ページとの食い違いの原因だった）。
-  const bets = (allBets || []).filter(b => !isCandidate(b));
+  const bets = (allBets || []).filter(isPurchased);
   const settled = bets.filter(b => b.is_hit !== null && b.is_hit !== undefined);
   if (!settled.length) { el.innerHTML = ""; return; }
 
@@ -540,17 +595,20 @@ const EV_EXPLAIN_HTML = `
   <div class="ev-info-row">
     <span class="ev-info-formula">EV = モデル確率 × オッズ</span>
   </div>
-  <p class="ev-info-desc">モデルが「当たりやすい」と判断した組み合わせのオッズが高いほどEVが上がります。EV&gt;1.0で期待値プラス、このシステムはEV≥1.20のみ推奨します。</p>
+  <p class="ev-info-desc">モデルが「当たりやすい」と判断した組み合わせのオッズが高いほどEVが上がります。理屈では EV&gt;1.0 で期待値プラスですが、<strong>実測はそうなっていません。</strong></p>
+  <p class="ev-info-desc">下は 2026-08-30 に <strong>締切前の板だけ</strong>で測り直した回収率です（1,032レース）。EVで絞るほど悪くなります。以前この欄に出していた「EV3.0以上→239〜280%」は、レース後にしか分からない<strong>確定オッズ</strong>で測った数字で、実際には買えません。</p>
   <div class="ev-info-tiers">
-    <span class="ev-tier" style="color:#90a4ae">1.2〜1.5　実測 100〜120%</span>
-    <span class="ev-tier" style="color:#ffd54f">1.5〜2.0　実測 126〜138%</span>
-    <span class="ev-tier" style="color:#ffb74d">2.0〜3.0　実測 142〜174%</span>
-    <span class="ev-tier" style="color:#ff7043">3.0〜　　 実測 239〜280%</span>
+    <span class="ev-tier" style="color:#90a4ae">1.0以上　実測 71.6%</span>
+    <span class="ev-tier" style="color:#ffd54f">1.5以上　実測 63.4%</span>
+    <span class="ev-tier" style="color:#ffb74d">2.0以上　実測 54.1%</span>
+    <span class="ev-tier" style="color:#e57373">2.5以上　実測 48.9%</span>
   </div>
+  <p class="ev-info-desc">参考: 何も選ばず全部買うと 75.0%、無作為に買うと 74.2%。<strong>まだ損益分岐(100%)を超える買い方は見つかっていません。</strong></p>
 </div>`;
 
 function renderBets() {
-  const bets = state._betsCache;
+  // 一覧は「買う + 推奨のみ」。成績用の _betsCache と取り違えないこと。
+  const bets = state._listCache || [];
   const f = state.filters.bets;
 
   // ── フィルター＆ソートエリア ──
@@ -576,10 +634,24 @@ function renderBets() {
   infoPanel.innerHTML = state.evInfoOpen ? EV_EXPLAIN_HTML : "";
   filterArea.appendChild(infoPanel);
 
+  // 賭式フィルター。6賭式を1本の列に流すと1日800本を超えて探せないので、
+  // 層（固い / 勝負 / 夢）と賭式で絞れるようにする。
+  // 並びは BET_TIER の順（回収率の良い順）に固定する。名前順にすると
+  // 「固い」と「夢」が混ざって層の意味が読めなくなる。
+  const btOrder = Object.keys(BET_TIER);
+  filterArea.appendChild(
+    buildFilterBar(bets, b => betTypeLabel(b.bet_type), f.betType, val => {
+      state.filters.bets.betType = val;
+      state.betsShowAll = false;      // 絞り込み直したら表示上限を戻す
+      renderBets();
+    }, "全賭式", btOrder.map(betTypeLabel))
+  );
+
   // 場別フィルター
   filterArea.appendChild(
     buildFilterBar(bets, b => b.stadium_name, f.stadium, val => {
       state.filters.bets.stadium = val;
+      state.betsShowAll = false;
       renderBets();
     }, "全場")
   );
@@ -597,7 +669,9 @@ function renderBets() {
   });
 
   // ── フィルター適用 ──
-  let filtered = f.stadium ? bets.filter(b => b.stadium_name === f.stadium) : bets;
+  let filtered = bets;
+  if (f.betType) filtered = filtered.filter(b => betTypeLabel(b.bet_type) === f.betType);
+  if (f.stadium) filtered = filtered.filter(b => b.stadium_name === f.stadium);
 
   // ── ソート ──
   const bySort = (a, b) => {
@@ -620,12 +694,19 @@ function renderBets() {
   // ── サマリー ──
   // 日次の合計は上の day-panel が持つため、ここは「絞り込みの結果」だけを出す。
   // 同じ金額を2箇所に出すと、どちらを見ればよいか分からなくなる。
-  const totalAmt = filtered.reduce((s, b) => s + (b.recommended_amount || 0), 0);
+  // ⚠️ 金額は買う買い目だけで数える。推奨のみは賭け金0なので足しても
+  // 変わらないが、条件を明示しておかないと将来 record に金額が付いたときに
+  // 黙って混ざる（8/30 に実際そうなった）。
+  const buyN = filtered.filter(isPurchased).length;
+  const totalAmt = filtered.filter(isPurchased)
+    .reduce((s, b) => s + (b.recommended_amount || 0), 0);
   const isFiltered = filtered.length !== bets.length;
-  document.getElementById("bets-summary").innerHTML = isFiltered && filtered.length ? `
+  document.getElementById("bets-summary").innerHTML = filtered.length ? `
     <div class="bets-summary">
-      <span>絞り込み <strong>${filtered.length}</strong>/${bets.length} 件</span>
-      <span>投資 <strong>¥${totalAmt.toLocaleString()}</strong></span>
+      <span>${isFiltered ? `絞り込み <strong>${filtered.length}</strong>/${bets.length}`
+                         : `<strong>${filtered.length}</strong>`} 件</span>
+      <span>うち買う <strong>${buyN}</strong> 件</span>
+      <span>投資予定 <strong>¥${totalAmt.toLocaleString()}</strong></span>
     </div>` : "";
 
   // ── カード描画（EV順のときはティア区切りを挿入）──
@@ -635,10 +716,17 @@ function renderBets() {
     return;
   }
 
+  // 1日6賭式で800本を超える。全部を一度に描くと目的の1本まで辿り着けないので、
+  // 先頭から一定数だけ描き、残りはボタンで開く。区切りの件数は絞り込み後の
+  // 全体（finals/upcoming/settled の長さ）を出すので、上限で数字は変わらない。
+  const RENDER_CAP = 60;
+  const shown = state.betsShowAll ? filtered : filtered.slice(0, RENDER_CAP);
+  const hiddenN = filtered.length - shown.length;
+
   let html = "";
   let lastTier = null;
   let section = null;
-  filtered.forEach((b, i) => {
+  shown.forEach((b, i) => {
     const sec = settledOf(b) ? "settled" : (finalOf(b) ? "final" : "upcoming");
     if (sec !== section) {
       if (sec === "final") {
@@ -654,12 +742,14 @@ function renderBets() {
     }
     if (state.betsSort === "ev") {
       const ev = b.expected_value || 0;
-      // 区切りは実測の回収率帯に対応させる（旧: 1.3/1.5 の2段階）
+      // 区切りは締切前の板での実測に対応させる（evColor のコメント参照）。
+      // ⚠️ 以前は確定オッズで測った数字を出しており、高EV帯に
+      // 「回収率 239〜280%」と書いていた。実際は逆で、絞るほど悪化する。
       const tier =
-        ev >= 3.0 ? "EV 3.0以上　実測 回収率 239〜280%" :
-        ev >= 2.0 ? "EV 2.0〜3.0　実測 142〜174%" :
-        ev >= 1.5 ? "EV 1.5〜2.0　実測 126〜138%" :
-                    "EV 1.2〜1.5　実測 100〜120%";
+        ev >= 2.5 ? "EV 2.5以上　実測 回収率 48.9%" :
+        ev >= 2.0 ? "EV 2.0〜2.5　実測 54.1%" :
+        ev >= 1.5 ? "EV 1.5〜2.0　実測 63.4%" :
+                    "EV 1.5未満　実測 71.6%";
       const tierColor = evColor(ev);
       if (tier !== lastTier) {
         html += `<div class="ev-tier-divider" style="color:${tierColor}">${tier}</div>`;
@@ -668,12 +758,21 @@ function renderBets() {
     }
     html += buildBetCard(b, i);
   });
+  if (hiddenN > 0) {
+    html += `<button class="show-more" id="bets-show-more">
+      残り ${hiddenN} 件を表示</button>`;
+  }
   container.innerHTML = html;
   container.querySelectorAll(".bet-card").forEach((el, i) => {
     // 第3引数は race_id が引けなかったときの保険（openRaceModal 参照）
-    el.addEventListener("click", () => openRaceModal(filtered[i].race_id,
-      `${filtered[i].stadium_name} R${filtered[i].race_no}`,
-      { stadium: filtered[i].stadium_name, race_no: filtered[i].race_no }));
+    el.addEventListener("click", () => openRaceModal(shown[i].race_id,
+      `${shown[i].stadium_name} R${shown[i].race_no}`,
+      { stadium: shown[i].stadium_name, race_no: shown[i].race_no }));
+  });
+  const more = document.getElementById("bets-show-more");
+  if (more) more.addEventListener("click", () => {
+    state.betsShowAll = true;
+    renderBets();
   });
 }
 
@@ -719,8 +818,9 @@ function buildBetCard(b) {
           ${tierBadge(b.bet_type)}
           ${comboSpans(b.combination)}
         </div>
-        <span class="bet-card__amount">${(b.recommended_amount||0) > 0
-          ? "¥" + (b.recommended_amount||0).toLocaleString() : ""}</span>
+        <span class="bet-card__amount">${isPurchased(b)
+          ? "¥" + (b.recommended_amount||0).toLocaleString()
+          : `<span class="amount-record">推奨のみ</span>`}</span>
       </div>
       <div class="bet-card__foot">
         <span class="bet-card__stats">
@@ -911,7 +1011,14 @@ function openRaceModal(raceId, title, fallback) {
   }
   const entries = race?.entries ?? [];
   const preds   = race?.predictions ?? [];
-  const raceBets = state._betsCache.filter(b => b.race_id === raceId);
+  // モーダルは6賭式すべて出す（_listCache）。ここを _betsCache にしていると
+  // 「2連複しか出ない」が一覧とモーダルの両方で起きる。
+  // race_id は経路によって採番が違うので、上の race と同じく場+R番号でも拾う。
+  let raceBets = (state._listCache || []).filter(b => b.race_id === raceId);
+  if (!raceBets.length && fallback) {
+    raceBets = (state._listCache || []).filter(
+      b => b.stadium_name === fallback.stadium && b.race_no === fallback.race_no);
+  }
   const predMap  = Object.fromEntries(preds.map(p => [p.boat_no, p]));
 
     const entryRows = entries.map(e => {
@@ -928,15 +1035,23 @@ function openRaceModal(raceId, title, fallback) {
       </tr>`;
     }).join("");
 
-    const betsSection = raceBets.length ? `
+    // 賭式は「固い→夢」の順で並べる。回収率の良い順なので、上から読めば
+    // 手堅い順に見える。BET_TIER に無い賭式は末尾へ。
+    const btRank = Object.keys(BET_TIER);
+    const sortedBets = [...raceBets].sort((x, y) => {
+      const rx = btRank.indexOf(x.bet_type), ry = btRank.indexOf(y.bet_type);
+      return (rx < 0 ? 99 : rx) - (ry < 0 ? 99 : ry);
+    });
+    const betsSection = sortedBets.length ? `
       <div style="margin-top:1rem;">
         <p style="font-size:.78rem;color:var(--muted);margin-bottom:.4rem;">推奨買い目</p>
-        ${raceBets.map(b => `
-          <div style="display:flex;justify-content:space-between;align-items:center;
+        ${sortedBets.map(b => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem;
                       padding:.35rem 0;border-bottom:1px solid var(--surface2);font-size:.85rem;">
-            <span>${betTypeLabel(b.bet_type)} ${comboSpans(b.combination)}</span>
-            <span style="color:var(--gold);font-weight:700;">EV ${(b.expected_value||0).toFixed(2)}</span>
-            <span style="color:var(--green);">¥${(b.recommended_amount||0).toLocaleString()}</span>
+            <span>${betTypeLabel(b.bet_type)}${tierBadge(b.bet_type)} ${comboSpans(b.combination)}</span>
+            <span style="color:${evColor(b.expected_value||0)};font-weight:700;">EV ${(b.expected_value||0).toFixed(2)}</span>
+            <span style="color:${isPurchased(b) ? "var(--green)" : "var(--muted)"};white-space:nowrap;">${
+              isPurchased(b) ? "¥" + (b.recommended_amount||0).toLocaleString() : "推奨のみ"}</span>
           </div>`).join("")}
       </div>` : "";
 
