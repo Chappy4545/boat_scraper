@@ -186,36 +186,75 @@ const BET_TIER = {
 //
 // それでも画面には残す。向きは正で、少なくとも害は無く、812件の総当たりを
 // そのまま並べるより選べるため。ただし**確かめられたかどうかを表示する。**
-const BUY_FILTER = {
-  fukusho:     { minProb: 0.945, roi: 95.6, confirmed: false },
-  kakurenfuku: { minProb: 0.778, roi: 88.6, confirmed: true },
-  nirenfuku:   { minProb: 0.435, roi: 86.3, confirmed: false },
+// ── 確度（どれが堅いか）──
+//
+// ⭐ **的中率は精度よく測れる。回収率は測れない。**
+// 同じ17,000レースでも、回収率の95%区間は±5〜15pt になるのに対し、
+// 的中率は**±1〜2pt** に収まる（配当のばらつきが効かないため）。
+// 「勝てるか」は言えなくても「**当たりやすいか**」ははっきり言える。
+//
+// 賭式ごとに確率の四分位で4段階に分け、未使用データ（2026-02-02〜04-22・
+// 10,809レース・探索に一度も使っていない）で的中率を測った。
+// `scripts/confidence_bands.py`
+//
+//   複勝  S(p>=0.904) 的中88.9% / A 80.6% / B 72.2% / C 57.4%
+//   単勝  S(p>=0.650) 的中76.0% / A 64.3% / B 51.4% / C 35.5%
+//   拡連複 S(p>=0.729) 的中67.7% / A 58.2% / B 51.1% / C 43.2%
+//   2連複 S(p>=0.387) 的中43.0% / A 34.1% / B 27.6% / C 20.5%
+//   3連複 S(p>=0.354) 的中34.9% / A 26.4% / B 21.5% / C 15.2%
+//   3連単 S(p>=0.117) 的中15.3% / A 10.4% / B  8.2% / C  3.8%
+//
+// **6賭式すべてで単調**、しかも探索データの値とほぼ一致した
+// （複勝S 88.9% vs 87.7%、2連複S 43.0% vs 43.3%）。期間に依らない。
+//
+// ⚠️ **的中率が高い＝勝てる、ではない。** 当たりやすいぶん配当は低い。
+// S帯の回収率は 86〜97% で、どれも100%未満。必ず分けて書くこと。
+const CONFIDENCE = {
+  fukusho:     { cuts: [0.674, 0.802, 0.904], hit: [0.574, 0.722, 0.806, 0.889] },
+  tansho:      { cuts: [0.381, 0.504, 0.650], hit: [0.355, 0.514, 0.643, 0.759] },
+  kakurenfuku: { cuts: [0.563, 0.645, 0.729], hit: [0.431, 0.511, 0.582, 0.677] },
+  nirenfuku:   { cuts: [0.255, 0.316, 0.387], hit: [0.205, 0.277, 0.341, 0.430] },
+  sanrenfuku:  { cuts: [0.227, 0.285, 0.354], hit: [0.152, 0.215, 0.264, 0.349] },
+  sanrentan:   { cuts: [0.061, 0.086, 0.117], hit: [0.038, 0.082, 0.104, 0.153] },
 };
-// 未使用データでの実測回収率の幅（上の roi の最小〜最大）
-const BUY_FILTER_ROI = [86.3, 95.6];
+const GRADES = ["C", "B", "A", "S"];
 
-// 買うべき一覧に出すか。
-// ⚠️ 実際に賭け金が付いている買い目は、条件に関係なく必ず出す。
+// その買い目の確度。段階と、その帯の**実測**的中率を返す。
+function confidenceOf(bet) {
+  const c = bet && CONFIDENCE[bet.bet_type];
+  if (!c) return null;
+  const p = bet.model_prob || 0;
+  let i = 0;
+  while (i < c.cuts.length && p >= c.cuts[i]) i++;
+  return { grade: GRADES[i], rank: i, hit: c.hit[i] };
+}
+
+// 既定の一覧に出すか＝確度が最上位(S)か。
+// ⚠️ 実際に賭け金が付いている買い目は、確度に関係なく必ず出す。
 // 絞り込みで自分が買った買い目が消えるのが一番まずい。
 function isRecommended(bet) {
   if (!bet) return false;
   if (isPurchased(bet)) return true;
-  const f = BUY_FILTER[bet.bet_type];
-  return !!f && (bet.model_prob || 0) >= f.minProb;
+  const c = confidenceOf(bet);
+  return !!c && c.grade === "S";
 }
 
 function tierBadge(t) {
   const v = BET_TIER[t];
   if (!v) return "";
-  const f = BUY_FILTER[t];
-  // 絞りの効果が未使用データで確かめられた賭式だけ印をつける。
-  // 「買うべき」に出ている＝効果が確認済み、と誤解させないため。
-  const mark = f && f.confirmed
-    ? `<span class="tier-badge tier-badge--ok" title="絞りの効果を未使用データ`
-      + `10,809レースで確認済み（+3.4pt, 95%区間 +0.1〜+6.7）">確認済</span>`
-    : "";
   return `<span class="tier-badge" title="未見17,090レースでの実測回収率">`
-       + `${v.tier} ${v.roi.toFixed(0)}%</span>${mark}`;
+       + `${v.tier} ${v.roi.toFixed(0)}%</span>`;
+}
+
+// 確度の印。**実測の的中率をそのまま出す**のが肝心で、段階の記号だけだと
+// 「S=勝てる」と読まれてしまう。的中率は未使用データで測った値。
+function confBadge(bet) {
+  const c = confidenceOf(bet);
+  if (!c) return "";
+  return `<span class="conf conf--${c.grade}" title="確度 ${c.grade}：`
+       + `この確率帯の実測的中率（未使用データ10,809レース）。`
+       + `⚠️ 当たりやすいぶん配当は低く、回収率は100%未満です">`
+       + `${c.grade} <b>的中${(c.hit * 100).toFixed(0)}%</b></span>`;
 }
 
 // actual_payout は「100円あたりの払戻額」（オッズ3.6倍 → 360）。
@@ -727,24 +766,24 @@ function renderBets() {
   viewRow.className = "view-toggle";
   viewRow.innerHTML = `
     <button class="view-btn${state.betsView === "buy" ? " active" : ""}" data-view="buy">
-      買うべき <span class="view-btn__n">${nBuy}</span></button>
+      確度S <span class="view-btn__n">${nBuy}</span></button>
     <button class="view-btn${state.betsView === "all" ? " active" : ""}" data-view="all">
       すべて <span class="view-btn__n">${all.length}</span></button>`;
   filterArea.appendChild(viewRow);
 
-  // ⚠️ 「買うべき」でも損益分岐は超えていない。必ず実測値を併記する。
-  if (state.betsView === "buy") {
-    const note = document.createElement("div");
-    note.className = "buy-note";
-    note.innerHTML =
-      `モデルの確率が高い買い目だけに絞っています。`
-      + `未使用データ10,809レースでの実測は`
-      + `<strong>${BUY_FILTER_ROI[0]}〜${BUY_FILTER_ROI[1]}%</strong>。`
-      + `<strong>まだ100%未満で、買えば平均して減ります。</strong>`
-      + `絞りの効果が確かめられたのは拡連複だけです`
-      + `（複勝・2連複は向きは正だが誤差の範囲）。`;
-    filterArea.appendChild(note);
-  }
+  // ⚠️ 確度が高くても損益分岐は超えていない。ここを書かないと
+  // 「S＝勝てる」と読まれる。必ず両方書く。
+  const note = document.createElement("div");
+  note.className = "buy-note";
+  note.innerHTML = state.betsView === "buy"
+    ? `各賭式で<strong>確率が上位25%</strong>の買い目だけ。`
+      + `カードの <b>S 的中◯%</b> はその帯の実測的中率です`
+      + `（未使用データ10,809レース・誤差±1〜2pt）。`
+      + `<strong>⚠️ 当たりやすいぶん配当は低く、回収率は86〜97%で`
+      + `100%未満です。</strong>`
+    : `全賭式・全レースの総当たりです。カードの <b>S/A/B/C</b> は確度の段階で、`
+      + `数字はその帯の実測的中率（未使用データ10,809レース）。`;
+  filterArea.appendChild(note);
 
   // EV説明トグル
   const infoRow = document.createElement("div");
@@ -822,12 +861,18 @@ function renderBets() {
   // 食い違うメッセージになる。
   const bySort = (a, b) => {
     if (state.betsSort === "prob") {
-      // 賭式ごとに確率の水準が違うので、閾値からの余裕で比べる。
-      // 生の確率順にすると複勝ばかりが上に来る。
-      const m = x => (x.model_prob || 0) - (BUY_FILTER[x.bet_type] || {}).minProb;
-      const d = (m(b) || 0) - (m(a) || 0);
+      // 確度の段階が先、同じ段階なら帯の中での位置で比べる。
+      // 生の確率順にすると複勝ばかりが上に来る（賭式で水準が違う）。
+      const ca = confidenceOf(a), cb = confidenceOf(b);
+      const d = ((cb && cb.rank) || 0) - ((ca && ca.rank) || 0);
       if (d) return d;
-      return (b.model_prob || 0) - (a.model_prob || 0);
+      const m = x => {
+        const c = CONFIDENCE[x.bet_type];
+        if (!c) return 0;
+        const lo = c.cuts[(confidenceOf(x) || {}).rank - 1] || 0;
+        return (x.model_prob || 0) - lo;
+      };
+      return m(b) - m(a);
     }
     if (state.betsSort === "ev") return (b.expected_value || 0) - (a.expected_value || 0);
     if (a.stadium_name !== b.stadium_name) return a.stadium_name.localeCompare(b.stadium_name, "ja");
@@ -971,7 +1016,7 @@ function buildBetCard(b) {
       <div class="bet-card__body">
         <div class="bet-card__combo">
           <span class="bet-type-label">${betTypeLabel(b.bet_type)}</span>
-          ${tierBadge(b.bet_type)}
+          ${confBadge(b)}
           ${comboSpans(b.combination)}
         </div>
         <span class="bet-card__amount">${isPurchased(b)

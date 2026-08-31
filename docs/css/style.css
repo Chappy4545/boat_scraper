@@ -1422,11 +1422,18 @@ body {
 
 /* 賭け金が付かない「推奨のみ」。金額欄が空だと、金額の付く買い目と
    見分けがつかず「なぜこれは0円なのか」が分からない。2026-08-31 追加。 */
-/* 絞りの効果を未使用データで確かめられた賭式だけに付く印。
-   「買うべき」に出ている＝効果が確認済み、と誤解させないため。2026-08-31。 */
-.tier-badge--ok{
-  border-color:var(--green); color:var(--green);
+/* 確度の印。段階の記号だけでなく**実測の的中率**を必ず併記する
+   （記号だけだと「S＝勝てる」と読まれる）。2026-08-31 追加。 */
+.conf{
+  display:inline-block; margin:0 .35rem 0 .2rem; padding:.05rem .4rem;
+  border:1px solid currentColor; border-radius:.6rem;
+  font-size:.68rem; white-space:nowrap; opacity:.95;
 }
+.conf b{ font-weight:700; }
+.conf--S{ color:#4db6ac; }
+.conf--A{ color:#9ccc65; }
+.conf--B{ color:#bdbdbd; }
+.conf--C{ color:#8d8d8d; opacity:.75; }
 
 /* 「買うべき」/「すべて」の切替。既定は買うべき。
    総当たり812件を並べても、そこから買うものを選べない。2026-08-31 追加。 */
