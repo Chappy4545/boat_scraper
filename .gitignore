@@ -63,3 +63,5 @@ data/processed/walkforward.db
 
 # ウォークフォワードの予測保存。scripts/wf_store.py で再生成できる
 data/processed/wf_picks.db
+# 確認用（探索に使っていない 2〜4月）。wf_store.py で再生成できる
+data/processed/wf_holdout.db
