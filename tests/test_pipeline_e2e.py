@@ -392,6 +392,49 @@ def test_締切を過ぎたレースに賭け金が付かない(day, monkeypatch
     assert "締切後" in reasons, f"見送り理由が残っていない: {reasons}"
 
 
+def test_朝にオッズが無くても昼の更新で買い目が出る(day, monkeypatch):
+    """⚠️ 朝の実行を早める判断が、これが成り立つかに懸かっている。
+
+    morning_predict は 09:30 JST に走る。08:00 でないのは「8時台は単勝
+    オッズがまだ公開されていないレースが多い」ため（2026-08-21 実測:
+    09:03 の取得で35%が0）。代わりにモーニングレース（締切08:30頃）を
+    毎日捨てている。
+
+    だが特徴量に単勝オッズは入っていない（FEATURE_COLS に無い）ので、
+    朝の時点でオッズが無くても**予測そのものは作れる**。あとは
+    refresh_odds が日中に板を見て買い目を作り直せばよい。
+    ここではその「作り直し」が本当に効くかを確かめる。
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Odds
+
+    monkeypatch.setattr(main, "date", _FixedDate)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+
+    with get_session() as s:            # 朝はオッズが無かったことにする
+        for o in s.query(Odds).all():
+            s.delete(o)
+    main.cmd_predict(D)                 # オッズ無しで予測をやり直す
+
+    probs = _load(day, "probs")
+    assert probs and len(probs["races"]) == len(RACES), \
+        "オッズが無いと予測(probs)まで作れなくなっている"
+    before = [b for b in (_load(day, "bets") or [])
+              if (b.get("recommended_amount") or 0) > 0]
+
+    main.cmd_refresh_odds(D, max_workers=1)   # 日中の更新で板を見る
+
+    after = _load(day, "bets") or []
+    assert after, "更新後も買い目が1本も無い"
+    types = {b["bet_type"] for b in after}
+    buy, paper = _cfg_types()
+    assert (buy | paper) <= types, f"賭式が欠けている: {types}"
+    assert len(after) > len(before), \
+        f"朝オッズ無し({len(before)}本) → 更新後({len(after)}本) で増えていない"
+
+
 def test_買い目には必ずルール名が入る(day):
     """経路によって rule が付いたり付かなかったりしないこと。
 

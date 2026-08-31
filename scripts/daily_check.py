@@ -610,8 +610,41 @@ def main() -> None:
 
     if ng:
         print(f"\n[!] 異常 {len(ng)}件: {', '.join(n for n, _, _ in ng)}")
+        notify_ng(d, ng)
         sys.exit(1)
     print("\nすべて正常")
+
+
+def notify_ng(d, ng) -> bool:
+    """異常があったときだけ手元へ飛ばす。
+
+    ⚠️ これまで daily_check は「通知先が設定されているか」を確かめるだけで、
+    **自分では一度も送っていなかった**。異常は health.json と画面バナーに
+    しか出ず、アプリを開くまで気づけない。2026-08-28 の夜間処理の未完走が
+    3日間気づかれなかったのはこれ（[[project_update_reliability]]）。
+
+    正常な日は送らない。毎晩届くと読まなくなる。
+    戻り値は「送ろうとしたか」。宛先未設定なら False。
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from notify import _send, webhook_url
+        if not webhook_url():
+            print("  (通知先が未設定のため送りません)")
+            return False
+        lines = [f"⚠️ {d} の点検で {len(ng)}件の異常"]
+        for n, _ok, detail in ng:
+            lines.append(f"・{n}: {detail}")
+        _send("\n".join(lines))
+        return True
+    except SystemExit:
+        # notify._send は失敗時に exit(1) する。点検の結果表示まで
+        # 巻き込まれないよう、ここで止める。
+        print("  (通知の送信に失敗しました)")
+        return False
+    except Exception as e:
+        print(f"  (通知を送れませんでした: {e})")
+        return False
 
 
 if __name__ == "__main__":
