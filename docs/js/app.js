@@ -171,13 +171,28 @@ const BET_TIER = {
 //
 // ⚠️ **どれも 100% 未満。** 「買うべき」は「最も損が小さい」の意味であって、
 // 勝てるという意味ではない。画面にも必ず実測値を併記すること。
+// ⚠️ 2026-08-31 夜、**一度も使っていない 2〜4月（10,809レース）で確かめた**
+// （`scripts/prob_filter_confirm.py`、仮説と判定基準は結果を見る前に確定）。
+// 結果は**部分的な再現**にとどまった:
+//
+//   賭式     全部買う  絞った   差      95%区間        窓ごとの符号  判定
+//   複勝      94.4%   95.6%  +1.2pt [-1.0〜+3.4]  −−++      × 再現せず
+//   拡連複    85.2%   88.6%  +3.4pt [+0.1〜+6.7]  −+++      ○ 再現
+//   2連複     84.9%   86.3%  +1.4pt [-3.9〜+6.7]  −+−+      × 再現せず
+//
+// 向きは3つとも正だが、探索の窓（+3.2〜+5.4pt）の半分ほどに縮み、
+// 区間が0を含む。**確かめられたのは拡連複だけ**で、それも下限 +0.1pt。
+// 3件を検定しているので、1件だけの通過は偶然と区別しづらい。
+//
+// それでも画面には残す。向きは正で、少なくとも害は無く、812件の総当たりを
+// そのまま並べるより選べるため。ただし**確かめられたかどうかを表示する。**
 const BUY_FILTER = {
-  fukusho:     { minProb: 0.945, roi: [96.6, 96.7] },
-  kakurenfuku: { minProb: 0.778, roi: [91.0, 88.5] },
-  nirenfuku:   { minProb: 0.435, roi: [90.7, 84.6] },
+  fukusho:     { minProb: 0.945, roi: 95.6, confirmed: false },
+  kakurenfuku: { minProb: 0.778, roi: 88.6, confirmed: true },
+  nirenfuku:   { minProb: 0.435, roi: 86.3, confirmed: false },
 };
-// この条件で買ったときの実測回収率の幅（悪い方の窓〜良い方の窓）
-const BUY_FILTER_ROI = [84.6, 96.7];
+// 未使用データでの実測回収率の幅（上の roi の最小〜最大）
+const BUY_FILTER_ROI = [86.3, 95.6];
 
 // 買うべき一覧に出すか。
 // ⚠️ 実際に賭け金が付いている買い目は、条件に関係なく必ず出す。
@@ -192,8 +207,15 @@ function isRecommended(bet) {
 function tierBadge(t) {
   const v = BET_TIER[t];
   if (!v) return "";
+  const f = BUY_FILTER[t];
+  // 絞りの効果が未使用データで確かめられた賭式だけ印をつける。
+  // 「買うべき」に出ている＝効果が確認済み、と誤解させないため。
+  const mark = f && f.confirmed
+    ? `<span class="tier-badge tier-badge--ok" title="絞りの効果を未使用データ`
+      + `10,809レースで確認済み（+3.4pt, 95%区間 +0.1〜+6.7）">確認済</span>`
+    : "";
   return `<span class="tier-badge" title="未見17,090レースでの実測回収率">`
-       + `${v.tier} ${v.roi.toFixed(0)}%</span>`;
+       + `${v.tier} ${v.roi.toFixed(0)}%</span>${mark}`;
 }
 
 // actual_payout は「100円あたりの払戻額」（オッズ3.6倍 → 360）。
@@ -715,9 +737,12 @@ function renderBets() {
     const note = document.createElement("div");
     note.className = "buy-note";
     note.innerHTML =
-      `モデルの確率が高い順に、実測で「全部買う」を上回った条件だけ。`
-      + `<strong>実測 ${BUY_FILTER_ROI[0]}〜${BUY_FILTER_ROI[1]}%</strong>`
-      + `（17,090レース・独立2窓）。<strong>まだ100%未満です。</strong>`;
+      `モデルの確率が高い買い目だけに絞っています。`
+      + `未使用データ10,809レースでの実測は`
+      + `<strong>${BUY_FILTER_ROI[0]}〜${BUY_FILTER_ROI[1]}%</strong>。`
+      + `<strong>まだ100%未満で、買えば平均して減ります。</strong>`
+      + `絞りの効果が確かめられたのは拡連複だけです`
+      + `（複勝・2連複は向きは正だが誤差の範囲）。`;
     filterArea.appendChild(note);
   }
 
