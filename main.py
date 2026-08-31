@@ -24,7 +24,11 @@
 そのため PC の稼働に関係なく、その日のうちにクラウドで退避しておく。
 """
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+# 締切の判定に使う。全国どの場も日本時間で締め切る。
+# ⚠️ naive な datetime.now() と混ぜないこと（比較で例外になる）。
+JST = timezone(timedelta(hours=9))
 
 from src.utils.helpers import load_config
 from src.utils.logger import setup_logger, get_logger
@@ -550,6 +554,21 @@ def cmd_predict(target_date: date | None = None, full_export: bool = True):
     with get_session() as session:
         races = session.query(Race).filter(Race.race_date == d).all()
         race_ids = [r.id for r in races]
+        closing_of = {r.id: r.closing_time for r in races}
+
+    # 締切を過ぎたレースに賭け金を付けない。
+    #
+    # ⚠️ 2026-08-31 発見。朝のクラウド実行が、その日いちばん早いレースの
+    # 締切に間に合っていない（初回の書き出しが 09:43 頃、最速のレースは
+    # 08:48〜09:26 に締切）。実測: 芦屋R2 は締切の46分後、R3 は20分後に
+    # 初めて JSON に現れ、どちらも 500円 が付いたまま損益に入っていた。
+    # 08-20 以降12日で24本（7%）が「買えなかったのに集計されている」。
+    #
+    # refresh_odds には同じ守りが入っている（closed_race_ids。2026-08-12 の
+    # 「締切を過ぎてから買い目が生える」事故の後）。こちらにも要る。
+    closed = _closed_race_ids(d, closing_of)
+    if closed:
+        logger.info(f"  締切済み {len(closed)}レースには賭け金を付けません")
 
     logger.info(f"{d}: {len(race_ids)} レースを予測・買い目生成 (use_ranker={use_ranker})")
     mm = MoneyManager(config)
@@ -585,6 +604,8 @@ def cmd_predict(target_date: date | None = None, full_export: bool = True):
 
     amounts: dict[tuple[int, object], int] = {}
     for ev, rid, idx in candidates:
+        if rid in closed:
+            continue            # 締切済み。買えないものに金額を付けない
         row = dict(next(b for r, b in per_race if r == rid).loc[idx])
         amt = mm.calc_bet_amount(
             float(row["expected_value"]), float(row["model_prob"]),
@@ -594,9 +615,12 @@ def cmd_predict(target_date: date | None = None, full_export: bool = True):
             state.reserve(amt)      # 予算を消費（これが無いと日次上限が効かない）
             amounts[(rid, idx)] = amt
 
-    skipped_budget = len(candidates) - len(amounts)
+    n_closed_cand = sum(1 for _ev, rid, _i in candidates if rid in closed)
+    skipped_budget = len(candidates) - len(amounts) - n_closed_cand
     if skipped_budget:
         logger.info(f"  日次予算({mm.max_per_day:,}円)超過のため {skipped_budget} 件を見送り")
+    if n_closed_cand:
+        logger.info(f"  締切後のため {n_closed_cand} 件を見送り")
 
     # ── 保存
     for rid, bets_df in per_race:
@@ -622,7 +646,11 @@ def cmd_predict(target_date: date | None = None, full_export: bool = True):
                     amount = amounts.get((rid, idx), 0)
                     reason = str(row.get("pass_reason", ""))
                     if not is_pass and amount == 0:
-                        is_pass, reason = True, "日次予算上限"
+                        # 理由を分けておく。「買えなかった」と「予算で見送った」は
+                        # 別の話で、前者は後から集計から外す判断に使う。
+                        is_pass, reason = (
+                            (True, "締切後") if rid in closed
+                            else (True, "日次予算上限"))
                     hit, pay = prev.get(
                         (str(row.get("bet_type", "")), str(row.get("combination", ""))),
                         (None, None),
@@ -734,6 +762,40 @@ def _backfill_final_odds(d: date, max_workers: int = 5) -> None:
             logger.info(f"  確定オッズ({bt}): {tail[-1].split('- ')[-1] if tail else 'ログなし'}")
         except Exception as e:
             logger.warning(f"  確定オッズ({bt}) 取得失敗: {e}")
+
+
+def _closed_race_ids(d, closing_of: dict, now=None) -> set:
+    """締切を過ぎたレースの id。**買えないものに金額を付けないため**の判定。
+
+    ⚠️ 賭け金を付けてよいのは「これから締め切るレース」だけ。締切後のオッズは
+    確定値なので、そこから選ぶと「レースが終わってから買えたはずの買い目」に
+    なる。2026-08-12 に refresh_odds で発覚（表示18本のうち5本が締切後、
+    2本は締切の13分後と46分後）。2026-08-31 に**朝の書き出しにも同じ穴**が
+    あると分かった。朝のクラウド実行が最速レースの締切に間に合っていない。
+
+    締切時刻が無いレースは「まだ」とみなす。分からないものを締切後と決めて
+    金額を落とすと、締切時刻の取得が壊れた日に買い目が全滅する
+    （2026-08-29 に closing_time が全消しになった前例がある）。
+
+    過去日は全部締切済み。未来日は全部これから。
+    """
+    now = now or datetime.now(JST)
+    out = set()
+    if d > now.date():
+        return out
+    for rid, ct in closing_of.items():
+        if d < now.date():
+            out.add(rid)            # 過去日はレースが終わっている
+            continue
+        if not ct:
+            continue                # 分からないものは「まだ」に倒す
+        try:
+            close = datetime.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+        except (ValueError, TypeError):
+            continue
+        if close <= now:
+            out.add(rid)
+    return out
 
 
 # 検証中の候補ルールで出した買い目の見送り理由。買っていないので損益には
@@ -1047,13 +1109,10 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     import math
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import gzip
-    from datetime import datetime, timezone, timedelta
     from pathlib import Path
 
     from src.scraping.official import BoatRaceScraper
     import pandas as pd
-
-    JST = timezone(timedelta(hours=9))
 
     config = load_config()
     d = target_date or date.today()

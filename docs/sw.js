@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v14";
+const CACHE_NAME = "boatrace-v15";
 
 // v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
 //     開けず、PWA として成立していなかった。addAll は1件でも失敗すると
@@ -29,6 +29,10 @@ const CACHE_NAME = "boatrace-v14";
 //      落ちていた）。賭式フィルターを追加。EV帯の実測値を確定オッズ基準
 //      から締切前の板基準へ差し替え（高EVほど悪いので色も反転）。
 //      → memory: project_pwa_display_split
+// v15: 挙動の変更なし（コメントのみ）。isPurchased を is_final_pick で
+//      絞りかけて取りやめた経緯を残した。買えなかった買い目は**書く側**で
+//      防ぐ（main._closed_race_ids）。ここで絞ると、更新が止まった日の
+//      記録まで消える。
 const STATIC_ASSETS = [
   "./",
   "index.html",

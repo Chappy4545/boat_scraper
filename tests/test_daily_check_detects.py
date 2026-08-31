@@ -28,8 +28,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from datetime import timedelta, timezone  # noqa: E402
+
 from daily_check import (  # noqa: E402
-    _final_picks_lost, json_integrity_checks, lost_final_picks, night_runs)
+    _final_picks_lost, bets_revisions, json_integrity_checks,
+    lost_final_picks, night_runs, unbuyable_money_bets)
+
+JST9 = timezone(timedelta(hours=9))
 
 
 def _show(rev: str, path: str):
@@ -188,6 +193,62 @@ def test_実データでは確定が消えていない():
         checked += 1
     if not checked:
         pytest.skip("git 履歴なし")
+
+
+# ── 締切より後に生えた買い目 ────────────────────
+# 2026-08-31: 朝のクラウド実行が最速レースの締切に間に合わず、
+# 芦屋R2(締切08:58) の買い目が 09:43 に 500円 付きで初めて現れた。
+
+def _rev(hhmm, bets):
+    from datetime import datetime as dt
+    return (dt.strptime(f"2026-08-31 {hhmm}", "%Y-%m-%d %H:%M")
+            .replace(tzinfo=JST9), bets)
+
+
+def _mb(rn, ct, amount=500):
+    return {"stadium_name": "芦屋", "race_no": rn, "bet_type": "nirenfuku",
+            "combination": "1-2", "closing_time": ct,
+            "recommended_amount": amount}
+
+
+def test_締切後に生えた買い目を検知する():
+    revs = [_rev("09:43", [_mb(2, "08:58"), _mb(5, "11:30")])]
+    bad = unbuyable_money_bets(revs, "2026-08-31")
+    assert len(bad) == 1, f"R2 だけが該当のはず: {bad}"
+    assert bad[0][1] == 2 and bad[0][4] == 45, bad
+
+
+def test_締切前に出ていれば警報を出さない():
+    revs = [_rev("08:00", [_mb(2, "08:58")])]
+    assert unbuyable_money_bets(revs, "2026-08-31") == []
+
+
+def test_更新が止まっただけの買い目は警報を出さない():
+    """⚠️ ここを is_final_pick で判定すると誤検知する。
+
+    2026-08-26 は 13:16 に買い目生成が止まり、午後のレース8本が確定
+    しないまま残った。**朝から画面に出ていて買えた**買い目なので、
+    除外してはいけない。「初めて現れた時刻」で見ればここは通る。
+    """
+    revs = [_rev("09:00", [_mb(7, "14:26")]),      # 朝に出ている
+            _rev("13:16", [_mb(7, "14:26")])]      # 以後 更新が止まった
+    assert unbuyable_money_bets(revs, "2026-08-31") == []
+
+
+def test_賭け金0なら締切後に出ても警報を出さない():
+    """記録のみの買い目は損益に入らないので害が無い。"""
+    revs = [_rev("09:43", [_mb(2, "08:58", amount=0)])]
+    assert unbuyable_money_bets(revs, "2026-08-31") == []
+
+
+def test_実データで8月31日の2本が挙がる():
+    src = ROOT / "docs" / "data"
+    revs = bets_revisions("2026-08-31", src)
+    if not revs:
+        pytest.skip("git 履歴なし")
+    bad = unbuyable_money_bets(revs, "2026-08-31")
+    assert len(bad) == 2, f"芦屋R2/R3 の2本が挙がるはず: {bad}"
+    assert {b[1] for b in bad} == {2, 3}, bad
 
 
 # ── 賭式が欠けていないか ────────────────────

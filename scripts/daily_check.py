@@ -163,6 +163,17 @@ def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
         checks.append(("確定買い目の保全", n_lost == 0,
                        f"消えた確定 {n_lost}本 / {n_rev}版"
                        + ("　※損益が書き換わります" if n_lost else "")))
+
+    # 締切より後に初めて現れた「金額つき」買い目。買えなかったのに
+    # 損益に入る。2026-08-31 に朝のクラウド実行で発覚（詳細は
+    # unbuyable_money_bets の説明）。生成側は直したので、ここは再発の見張り。
+    revs = bets_revisions(d, data_dir)
+    if revs:
+        bad = unbuyable_money_bets(revs, d)
+        checks.append(("締切後に生えた買い目", not bad,
+                       f"{len(bad)}本"
+                       + (f"　※{bad[0][0]}R{bad[0][1]} は締切{bad[0][2]}の"
+                          f"{bad[0][4]}分後に出た" if bad else "")))
     return checks, peak
 
 
@@ -192,6 +203,47 @@ def lost_final_picks(revisions) -> set[tuple]:
         lost |= (seen - keys)
         seen |= keys
     return lost
+
+
+def unbuyable_money_bets(revisions, d) -> list[tuple]:
+    """締切より後に初めて現れた「金額つき」買い目を返す。
+
+    ⚠️ これは買えなかった買い目。損益に入ると数字が嘘になる。
+    2026-08-31 実測: 芦屋R2 は締切の46分後、R3 は20分後に初めて JSON に
+    現れ、どちらも 500円 が付いていた。朝のクラウド実行が最速レースの
+    締切に間に合っていなかった（初回の書き出しが 09:43、締切は 08:58/09:24）。
+
+    ⚠️ `is_final_pick` で代用してはいけない。確定しなかった買い目には
+    「更新が止まって確定できなかっただけで、朝から見えていた」ものが
+    混ざる（08-26 の8本がこれ）。**初めて現れた時刻**で見ること。
+
+    revisions は (コミット時刻, 買い目リスト) を古い順に並べたもの。
+    """
+    from datetime import datetime as _dt
+
+    first_seen: dict[tuple, object] = {}
+    out = []
+    for when, bets in revisions:
+        for b in bets:
+            if (b.get("recommended_amount") or 0) <= 0:
+                continue
+            k = final_pick_key(b)
+            if k in first_seen:
+                continue
+            first_seen[k] = when
+            ct = b.get("closing_time")
+            if not ct:
+                continue
+            try:
+                close = _dt.strptime(f"{d} {ct}", "%Y-%m-%d %H:%M").replace(
+                    tzinfo=when.tzinfo)
+            except (ValueError, TypeError):
+                continue
+            if when > close:
+                out.append((b.get("stadium_name"), b.get("race_no"), ct,
+                            when.strftime("%H:%M"),
+                            int((when - close).total_seconds() // 60)))
+    return out
 
 
 def night_runs(lines) -> list[tuple[str, bool]]:
@@ -265,6 +317,38 @@ def _final_picks_lost(d, data_dir: Path) -> tuple[int, int] | None:
             if b.returncode == 0:
                 out.append(json.loads(b.stdout))
         return len(lost_final_picks(out)), len(revs)
+    except Exception:
+        return None
+
+
+def bets_revisions(d, data_dir: Path):
+    """その日の bets JSON の全版を (コミット時刻, 中身) で古い順に返す。
+
+    git が無い / 履歴が浅いときは None（確認できないことを「異常なし」と
+    報告しないため、検査ごと出さない）。
+    """
+    import subprocess
+    from datetime import datetime as _dt
+
+    rel = f"docs/data/bets_{d}.json"
+    root = data_dir.parent.parent
+
+    def _git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", timeout=30)
+
+    try:
+        r = _git("log", "--format=%H %cI", "--", rel)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        out = []
+        for line in reversed(r.stdout.strip().splitlines()):   # 古い順
+            sha, when = line.split(None, 1)
+            b = _git("show", f"{sha}:{rel}")
+            if b.returncode == 0:
+                out.append((_dt.fromisoformat(when.strip()).astimezone(JST),
+                            json.loads(b.stdout)))
+        return out
     except Exception:
         return None
 

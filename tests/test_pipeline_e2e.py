@@ -32,7 +32,7 @@ import json
 import os
 import shutil
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from itertools import combinations, permutations
 from pathlib import Path
 
@@ -332,6 +332,64 @@ def test_賭け金が付くのは買う賭式だけ(day):
     bad = [b for b in _load(day, "bets")
            if (b.get("recommended_amount") or 0) > 0 and b["bet_type"] not in buy]
     assert not bad, f"記録だけの賭式に賭け金が付いている: {[b['bet_type'] for b in bad]}"
+
+
+def test_締切を過ぎたレースに賭け金が付かない(day, monkeypatch):
+    """⚠️ 2026-08-31 発見。朝のクラウド実行が最速レースの締切に間に合わず、
+    締切の46分後・20分後に初めて現れた買い目に 500円 が付いていた。
+
+    08-20 以降12日で24本（金額つきの7%）。買えなかったのに損益に入り、
+    回収率を 1.3pt 下振れさせていた（日単位では 118% と 131% ほど違う）。
+
+    fixture の締切は R1=11:30 / R2=12:30。R1 だけ過ぎた時刻で走らせる。
+
+    ⚠️ 素の fixture では通せない。理由が2つある:
+      1. DB にオッズが無いと買い目が全部「オッズなし」で先に見送られ、
+         賭け金を決める段階まで到達しない
+         → オッズが DB に入る cmd_predict_cloud で走らせる
+      2. 合成データでは EV が本番の閾値(1.2)を越えず、やはり到達しない
+         → **この検証だけ**閾値を緩める
+    どちらも「経路に到達していないのに通る」空振りの原因になる。
+    """
+    import main
+    import yaml
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+
+    cfg_path = day / "configs" / "config.yaml"
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    cfg["betting"].update({"min_expected_value": 0.1,
+                           "min_model_confidence": 0.0, "min_odds": 1.0})
+    cfg["betting"].pop("bet_type_overrides", None)
+    cfg_path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+
+    real_closed = main._closed_race_ids
+
+    def fake(d, closing_of, now=None):
+        # 「R1 の締切は過ぎ、R2 はこれから」の時刻を渡す
+        return real_closed(d, closing_of,
+                           now=datetime.combine(D, dt_time(12, 0), tzinfo=main.JST))
+
+    monkeypatch.setattr(main, "date", _FixedDate)
+    monkeypatch.setattr(main, "_closed_race_ids", fake)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+
+    # ⚠️ セッションの外で ORM の属性を読むと DetachedInstanceError。
+    # 中で素の値へ落としてから出す。
+    with get_session() as s:
+        rows = [(r.race_no, b.bet_type, b.recommended_amount or 0, b.pass_reason)
+                for b, r in (s.query(Bet, Race)
+                             .join(Race, Bet.race_id == Race.id)
+                             .filter(Race.race_date == D).all())]
+
+    paid_closed = [x for x in rows if x[0] == RACES[0] and x[2] > 0]
+    assert not paid_closed, \
+        f"締切済みの R{RACES[0]} に賭け金が付いている: {paid_closed[:5]}"
+
+    # 見送りの理由が「締切後」で残っていること（予算超過と区別する）
+    reasons = {x[3] for x in rows if x[0] == RACES[0]}
+    assert "締切後" in reasons, f"見送り理由が残っていない: {reasons}"
 
 
 def test_買い目には必ずルール名が入る(day):
