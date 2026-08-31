@@ -312,10 +312,15 @@ def export_day(target_date: date) -> dict:
                 "actual_payout": b.actual_payout,
                 "result_order": order_map.get(b.race_id),
                 "is_final_pick": bool(b.is_final_pick),
-                # 候補ルールの行だと分かるようにする。画面側の除外条件であり、
-                # クラウドが書く JSON と同じ形にしておく。
-                **({"rule": CANDIDATE_RULE_OF[b.pass_reason]}
-                   if b.pass_reason in CANDIDATE_RULE_OF else {}),
+                # ルール名は必ず入れる。クラウド(refresh_odds)が書く JSON と
+                # 同じ形にしておくため。
+                # ⚠️ 以前は候補ルールの行にだけ付けており、買う買い目は
+                # rule が無い（＝null）だった。同じ買い目が経路によって
+                # "r5" と null になり、rule で束ねる集計が割れる。
+                # 2026-08-31 の実データにも「rule=null・500円」が2本あった
+                # （締切前に確定できず DB 側の版が残ったもの）。
+                "rule": CANDIDATE_RULE_OF.get(b.pass_reason,
+                                              "record" if b.is_pass else "r5"),
             }
             for b, r, s in bets_raw
         ]

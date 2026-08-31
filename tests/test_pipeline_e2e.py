@@ -334,6 +334,44 @@ def test_賭け金が付くのは買う賭式だけ(day):
     assert not bad, f"記録だけの賭式に賭け金が付いている: {[b['bet_type'] for b in bad]}"
 
 
+def test_買い目には必ずルール名が入る(day):
+    """経路によって rule が付いたり付かなかったりしないこと。
+
+    refresh_odds は "r5"/"record" を書くが、export_day は候補ルールの行に
+    しか書いておらず、買う買い目は rule が無い（null）だった。同じ買い目が
+    経路で別の形になる。2026-08-31 の実データにも rule=null が2本あった。
+    突き合わせ自体は bet_key の `rule or "r5"` が吸収していたが、
+    rule で束ねる集計は割れる。
+
+    ⚠️ **買う買い目(is_pass=0)を DB に入れてから測ること。** 合成データの
+    DB は全部が見送りで、そのままだと旧実装でも rule が埋まってしまい
+    テストが素通りする（2026-08-31 に一度素通りさせた）。
+    """
+    import main
+    from src.export import export_day
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+
+    missing = [b for b in _load(day, "bets") if not b.get("rule")]
+    assert not missing, f"refresh_odds が書いた買い目 {len(missing)}本に rule が無い"
+
+    with get_session() as s:                # 買う買い目を DB に用意する
+        rid = s.query(Race).filter(Race.race_date == D).first().id
+        s.add(Bet(race_id=rid, model_version="v1",
+                  bet_type="nirenfuku", combination="1-2",
+                  model_prob=0.4, odds=2.6, expected_value=1.04,
+                  recommended_amount=500, is_pass=False, is_final_pick=True))
+    export_day(D)
+    bets = _load(day, "bets")
+    bought = [b for b in bets if (b.get("recommended_amount") or 0) > 0]
+    assert bought, "前提: 買う買い目が書き出されている"
+    missing = [b for b in bets if not b.get("rule")]
+    assert not missing, \
+        f"export_day が書いた買い目 {len(missing)}本に rule が無い"
+
+
 def test_賭式ごとに1レース1点まで(day):
     import main
     main.cmd_predict(D)
