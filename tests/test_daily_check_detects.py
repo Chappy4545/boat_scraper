@@ -28,7 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from daily_check import json_integrity_checks  # noqa: E402
+from daily_check import (  # noqa: E402
+    _final_picks_lost, json_integrity_checks, lost_final_picks, night_runs)
 
 
 def _show(rev: str, path: str):
@@ -127,6 +128,127 @@ def test_買い目の激減を検知する(tmp_path):
         prev_health={"date": "2026-08-26", "bets_peak": len(before)})
     ok, detail = _result(checks, "買い目の目減り")
     assert not ok, f"見逃した: {detail}"
+
+
+# ── 確定した買い目が消えていないか ────────────────────
+# 日中に消えてよいのは「まだ確定していない買い目」だけ。確定したものが
+# 消えるのは記録の破壊で、後から損益が書き換わる。
+
+def _bet(stadium, no, combo, final=True, race_id=1):
+    return {"race_id": race_id, "stadium_name": stadium, "race_no": no,
+            "bet_type": "nirenfuku", "combination": combo,
+            "is_final_pick": final}
+
+
+def test_確定した買い目が消えたら検知する():
+    revs = [
+        [_bet("桐生", 1, "1-2"), _bet("桐生", 2, "1-3")],
+        [_bet("桐生", 1, "1-2")],                       # R2 の確定が消えた
+    ]
+    lost = lost_final_picks(revs)
+    assert len(lost) == 1, f"見逃した: {lost}"
+    assert ("桐生", 2, "nirenfuku", "1-3") in lost
+
+
+def test_未確定が入れ替わっても警報を出さない():
+    """オッズが動けば EV が変わるので、未確定は入れ替わって当然。"""
+    revs = [
+        [_bet("桐生", 1, "1-2", final=False)],
+        [_bet("桐生", 1, "1-4", final=False)],
+    ]
+    assert lost_final_picks(revs) == set()
+
+
+def test_採番が入れ替わっても誤検知しない():
+    """⚠️ この誤検知を 2026-08-31 に実際に出した（08-28 で32本）。
+
+    クラウドとローカルで race_id の体系が違う。同じ買い目が別 id に
+    なるだけで「消えた」と数えてはいけない。
+    """
+    revs = [
+        [_bet("桐生", 1, "1-2", race_id=73)],           # クラウド採番
+        [_bet("桐生", 1, "1-2", race_id=36936)],        # 履歴DB採番
+    ]
+    assert lost_final_picks(revs) == set(), "race_id で見ている（採番違いに弱い）"
+
+
+def test_実データでは確定が消えていない():
+    """08-26〜08-31 の実際の履歴。ここが NG なら本当に記録が壊れている。"""
+    src = ROOT / "docs" / "data"
+    days = sorted(p.name[5:15] for p in src.glob("bets_2026-*.json"))[-5:]
+    if not days:
+        pytest.skip("bets JSON が無い")
+    checked = 0
+    for day in days:
+        got = _final_picks_lost(day, src)
+        if got is None:
+            continue
+        n_lost, n_rev = got
+        assert n_lost == 0, f"{day}: 確定買い目が {n_lost}本 消えている（{n_rev}版）"
+        checked += 1
+    if not checked:
+        pytest.skip("git 履歴なし")
+
+
+# ── 賭式が欠けていないか ────────────────────
+
+def test_賭式が欠けたら検知する(tmp_path):
+    """6賭式のうち片方の経路だけ古いと黙って賭式が減る。件数では出ない。"""
+    day = "2026-08-31"
+    only_one = [{"race_id": 1, "stadium_name": "桐生", "race_no": 1,
+                 "bet_type": "nirenfuku", "combination": "1-2"} for _ in range(135)]
+    checks, _ = json_integrity_checks(day, _stage(tmp_path, day, bets=only_one))
+    ok, detail = _result(checks, "賭式の欠け")
+    assert not ok, f"見逃した: {detail}"
+    assert "tansho" in detail and "sanrentan" in detail, detail
+
+
+def test_6賭式そろっていれば警報を出さない(tmp_path):
+    day = "2026-08-31"
+    types = ["tansho", "fukusho", "kakurenfuku",
+             "nirenfuku", "sanrenfuku", "sanrentan"]
+    bets = [{"race_id": 1, "stadium_name": "桐生", "race_no": 1,
+             "bet_type": t, "combination": "1-2"} for t in types]
+    checks, _ = json_integrity_checks(day, _stage(tmp_path, day, bets=bets))
+    ok, detail = _result(checks, "賭式の欠け")
+    assert ok, detail
+
+
+# ── 夜間処理が完走したか ────────────────────
+# 2026-08-28 22:30 の実行は DB 初期化まで書いて消滅し（PC が落ちた）、
+# 8/29 は起動もせず、8/30 09:00 の取りこぼし起動でようやく 8/29 分が
+# 処理された。その3日間、警告は一度も出ていない。
+
+def test_途中で死んだ実行を検知する():
+    lines = [
+        "[2026/08/27 22:30:24.71] JUDGE start ",
+        "[2026/08/27 22:31:45.99] JUDGE done ",
+        "[2026/08/28 22:30:17.30] JUDGE start ",     # done が来ないまま
+        "[2026/08/30  9:00:56.50] JUDGE start ",
+        "[2026/08/30  9:15:53.64] JUDGE done ",
+    ]
+    runs = night_runs(lines)
+    assert [ok for _, ok in runs] == [True, False, True], runs
+
+
+def test_失敗して終わった実行は完走扱い():
+    """自分で failed と書けたなら、少なくとも最後まで到達している。
+    黙って消えるのとは区別する（前者は exit code で分かる）。"""
+    lines = [
+        "[2026/08/27 22:30:24.71] JUDGE start ",
+        "[2026/08/27 22:31:45.99] JUDGE failed ",
+    ]
+    assert [ok for _, ok in night_runs(lines)] == [True]
+
+
+def test_実ログで8月28日の未完走が見える():
+    log = ROOT / "logs" / "task_judge.log"
+    if not log.exists():
+        pytest.skip("task_judge.log が無い")
+    runs = night_runs(log.read_text(encoding="utf-8", errors="replace").splitlines())
+    dead = [w for w, ok in runs if not ok]
+    assert any("08/28" in w for w in dead), \
+        f"08-28 の未完走を見落としている（未完走と判定したのは {dead}）"
 
 
 # ── 正常なデータで誤警報を出さないか ────────────────────

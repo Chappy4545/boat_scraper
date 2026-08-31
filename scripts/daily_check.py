@@ -34,7 +34,8 @@ except Exception:
     pass
 
 JST = timezone(timedelta(hours=9))
-DATA = Path(__file__).resolve().parent.parent / "docs" / "data"
+ROOT = Path(__file__).resolve().parent.parent
+DATA = ROOT / "docs" / "data"
 # 現在の候補ルールの見送り理由。棄却した market_blend("候補ルール(混合)")は
 # 別物なので混ぜない — 成績を合算すると、棄却済みのルールが新しい候補の
 # 数字を汚す。過去分は memory / git 履歴に残っている。
@@ -43,6 +44,26 @@ CANDIDATE_REASON = "候補ルール(価値1点)"
 
 def q1(conn, sql: str, **p):
     return conn.execute(text(sql), p).scalar() or 0
+
+
+# 賭式を2連複だけから6つへ広げた日。これより前の日は1賭式しか無いのが正常。
+SIX_BET_TYPES_SINCE = "2026-08-31"
+
+
+def _configured_bet_types() -> set[str]:
+    """config が「作るはず」としている賭式（買う + 記録のみ）。
+
+    ここに一覧を書き写すと設定を変えたときに黙って食い違うので、必ず
+    config から読む。読めなければ空集合を返し、検査自体を出さない
+    （確認できないことを「異常なし」と報告しないため）。
+    """
+    from src.models.plackett_luce import BET_TYPE_JP
+    try:
+        bet = load_config()["betting"]
+        jp = list(bet.get("bet_types") or []) + list(bet.get("paper_bet_types") or [])
+        return {BET_TYPE_JP[x] for x in jp if x in BET_TYPE_JP}
+    except Exception:
+        return set()
 
 
 def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
@@ -117,7 +138,135 @@ def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
     if peak >= 10:
         checks.append(("買い目の目減り", now_n >= peak * 0.8,
                        f"いま{now_n}本 / 本日最大{peak}本"))
+
+    # 賭式が欠けていないか。片方の経路だけ古いコードのままだと黙って賭式が
+    # 減る（画面には「買い目はある」と出るので件数では気づけない）。
+    # ⚠️ 件数ではなく**種類**で見る。2連複だけ135本あっても異常。
+    # 期待する賭式は config から読む（ここに書き写すと設定変更で食い違う）。
+    # 6賭式より前の日に当てると全部 NG になるので、切替日以降だけ見る。
+    want = _configured_bet_types()
+    if bets_j and want and str(d) >= SIX_BET_TYPES_SINCE:
+        got = {b.get("bet_type") for b in bets_j}
+        miss = want - got
+        checks.append(("賭式の欠け", not miss,
+                       f"{len(got & want)}/{len(want)}賭式"
+                       + (f"　※欠け {' '.join(sorted(miss))}" if miss else "")))
+
+    # 一度確定した買い目が消えていないか。
+    # 日中に消えてよいのは「まだ確定していない買い目」だけ（オッズが動けば
+    # EV が変わるので入れ替わる）。**確定したものが消えるのは記録の破壊**で、
+    # 後から損益が書き換わる。クラウドが15分ごとにコミットしているので、
+    # その履歴を遡ればその日の全ての状態を見られる。
+    lost_final = _final_picks_lost(d, data_dir)
+    if lost_final is not None:
+        n_lost, n_rev = lost_final
+        checks.append(("確定買い目の保全", n_lost == 0,
+                       f"消えた確定 {n_lost}本 / {n_rev}版"
+                       + ("　※損益が書き換わります" if n_lost else "")))
     return checks, peak
+
+
+def final_pick_key(b: dict) -> tuple:
+    """確定買い目を版をまたいで同一視するためのキー。
+
+    ⚠️ race_id を使ってはいけない。クラウドとローカルで採番の体系が違い
+    （2026-08-26 実測 クラウド 73〜 / 履歴DB 36936〜 で重なりゼロ）、書き手が
+    替わった日は同じ買い目が別物に見える。2026-08-31 に最初この関数を
+    race_id で書いたところ、08-28 に「確定が32本消えた」と誤検知した
+    （実際は0本）。場+レース番号で見る（src/export.py の _race_key と同じ）。
+    """
+    return (b.get("stadium_name"), b.get("race_no"),
+            b.get("bet_type"), b.get("combination"))
+
+
+def lost_final_picks(revisions) -> set[tuple]:
+    """版の並び（古い順）を受け取り、一度確定した後に消えた買い目を返す。
+
+    git から切り離してあるのはテストのため。git 越しだと「消えた版」を
+    作れず、検査が本当に落ちるかを確かめられない。
+    """
+    seen: set[tuple] = set()
+    lost: set[tuple] = set()
+    for bets in revisions:
+        keys = {final_pick_key(b) for b in bets if b.get("is_final_pick")}
+        lost |= (seen - keys)
+        seen |= keys
+    return lost
+
+
+def night_runs(lines) -> list[tuple[str, bool]]:
+    """夜間処理のログ行から (開始時刻, 完走したか) を古い順に返す。
+
+    ログの形は daily_judge.bat が書く3種類:
+        [日付 時刻] JUDGE start / JUDGE done / JUDGE failed
+    start の次に done|failed が来る前に別の start が来たら、その回は
+    **完走していない**（＝途中で殺された）。
+    """
+    import re
+
+    runs: list[tuple[str, bool]] = []
+    pat = re.compile(r"\[([^\]]+)\]\s+JUDGE (start|done|failed)")
+    for ln in lines:
+        m = pat.search(ln)
+        if not m:
+            continue
+        when, kind = m.group(1).strip(), m.group(2)
+        if kind == "start":
+            runs.append((when, False))
+        elif runs:
+            runs[-1] = (runs[-1][0], True)
+    return runs
+
+
+def _night_run_check() -> tuple[str, bool, str]:
+    """直近の夜間処理が完走しているか。
+
+    今まさに走っている回（daily_check は judge の後に動く）はまだ done を
+    書いていないので、最後の1回は判定から外す。
+    """
+    log = ROOT / "logs" / "task_judge.log"
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return ("夜間処理の完走", True, "ログなし（判定せず）")
+    runs = night_runs(lines)
+    if len(runs) < 2:
+        return ("夜間処理の完走", True, f"{len(runs)}回のみ（判定せず）")
+    past = runs[:-1][-7:]           # 直近7回（今走っている回は除く）
+    dead = [w for w, ok in past if not ok]
+    return ("夜間処理の完走", not dead,
+            f"直近{len(past)}回中 未完走{len(dead)}回"
+            + (f"　※{dead[-1]} が途中で止まっています" if dead else ""))
+
+
+def _final_picks_lost(d, data_dir: Path) -> tuple[int, int] | None:
+    """その日の bets JSON の全リビジョンを git から読んで判定する。
+
+    git が無い / 履歴が浅い（CI の shallow clone）ときは None。
+    確認できないことを「異常なし」と報告しないため、黙って項目を出さない。
+    """
+    import subprocess
+
+    rel = f"docs/data/bets_{d}.json"
+    root = data_dir.parent.parent          # docs/data → リポジトリ直下
+
+    def _git(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, encoding="utf-8", timeout=30)
+
+    try:
+        r = _git("log", "--format=%H", "--", rel)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        revs = r.stdout.split()
+        out = []
+        for sha in reversed(revs):         # 古い順
+            b = _git("show", f"{sha}:{rel}")
+            if b.returncode == 0:
+                out.append(json.loads(b.stdout))
+        return len(lost_final_picks(out)), len(revs)
+    except Exception:
+        return None
 
 
 def main() -> None:
@@ -268,6 +417,13 @@ def main() -> None:
     checks.append(("クラウド更新",
                    age is not None and (not racing_hours or age <= 40),
                    "未取得" if age is None else f"{age:.0f}分前"))
+
+    # 夜間処理が完走したか。**途中で死んでも誰も知らない**のが一番の穴だった。
+    # 2026-08-28 22:30 の実行は DB 初期化まで書いて消滅し（PC が落ちた）、
+    # 8/29 は起動すらせず、8/30 09:00 の取りこぼし起動でようやく 8/29 分が
+    # 処理された。その間ログには "JUDGE start" が done 無しで残っていただけで、
+    # 警告は一度も出ていない。
+    checks.append(_night_run_check())
 
     # 通知が飛ばせる状態か。未設定だと notify.py は標準出力に書くだけで
     # 正常終了するため、異常が起きても誰にも届かないまま気づけない

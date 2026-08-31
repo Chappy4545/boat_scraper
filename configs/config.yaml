@@ -8,6 +8,13 @@ scraping:
   timeout: 30
   max_retries: 3
   cache_dir: "data/raw"
+  # HTMLキャッシュの寿命。過去日のページは確定済みなので長く持ってよいが、
+  # 当日のページはレースが進むたびに中身が増えるので短命にする。
+  # 2026-08-30: 16時に取得した「終了済み121レース」が22:53の夜間処理でも
+  # 返り、結果収集が 119/168 で終わった（実際は168レース終了済み）。
+  # 一律24時間だったのが原因。→ src/utils/cache.py
+  cache_ttl_hours: 24            # 過去日のページ
+  cache_live_ttl_minutes: 5      # 当日のページ（0 にすると保存しない）
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 stadiums:

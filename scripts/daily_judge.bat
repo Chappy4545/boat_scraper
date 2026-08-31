@@ -56,15 +56,26 @@ REM the only copy, and odds cannot be fetched retrospectively. This runs for
 REM the day that has just finished, so the archive is certain to exist by now.
 "%PY%" main.py ingest_odds %RUNDATE% >> "%LOG%" 2>&1
 
+set "RC=0"
 "%PY%" main.py collect_results %RUNDATE% >> "%LOG%" 2>&1
+if errorlevel 1 (
+    set "RC=1"
+    echo [%date% %time%] collect_results failed >> "%LOG%"
+)
 "%PY%" main.py judge %RUNDATE% >> "%LOG%" 2>&1
-set "RC=%ERRORLEVEL%"
+if errorlevel 1 (
+    set "RC=1"
+    echo [%date% %time%] judge failed >> "%LOG%"
+)
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP STANDBYIDLE %OLDSLEEP% >nul 2>&1
 powercfg /setactive SCHEME_CURRENT >nul 2>&1
-if not "%RC%"=="0" (
-    echo [%date% %time%] JUDGE failed >> "%LOG%"
-    exit /b 1
-)
+
+REM Everything below runs even when a step above failed. It used to bail out
+REM here (exit /b 1), which meant the one case we most need to hear about --
+REM a failed run -- skipped the health report AND the commit, so the app kept
+REM showing the previous day's "all clear" and nobody found out.
+REM 2026-08-30: collect_results got 119/168 races; the failure reached only
+REM this log file. Report first, then fail.
 
 REM Warn only when results fall below the statistical threshold.
 "%PY%" scripts\watchdog.py >> "%LOG%" 2>&1
@@ -89,5 +100,14 @@ if errorlevel 1 (
     git rebase --abort >> "%LOG%" 2>&1
 ) else (
     git push >> "%LOG%" 2>&1
+)
+
+REM Always write a closing marker. daily_check reads this log and reports
+REM "start with no done" as a run that was killed mid-way -- which is how
+REM 2026-08-28 went unnoticed for three days. A run that failed but reached
+REM here is a different thing from one that vanished, so say which.
+if not "%RC%"=="0" (
+    echo [%date% %time%] JUDGE failed >> "%LOG%"
+    exit /b 1
 )
 echo [%date% %time%] JUDGE done >> "%LOG%"

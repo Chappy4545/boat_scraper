@@ -17,7 +17,13 @@ class BaseScraper:
         self.delay = float(cfg["delay_seconds"])
         self.timeout = int(cfg["timeout"])
         self.max_retries = int(cfg["max_retries"])
-        self.cache = FileCache(cache_dir=cfg["cache_dir"])
+        # 当日のページは短命にする。中身がまだ増えるので、長く持つと
+        # 「終了済み121レース」のような半日前の写しを読む（cache.py 参照）。
+        self.cache = FileCache(
+            cache_dir=cfg["cache_dir"],
+            ttl_hours=int(cfg.get("cache_ttl_hours", 24)),
+            live_ttl_minutes=int(cfg.get("cache_live_ttl_minutes", 5)),
+        )
         self._session = requests.Session()
         self._session.headers.update({
             "User-Agent": cfg["user_agent"],
