@@ -50,6 +50,13 @@ OUT = Path("data/processed/wf_picks.db")
 CUTOFFS = ["2026-05-01", "2026-05-21", "2026-06-10",
            "2026-06-30", "2026-07-20", "2026-08-09"]
 
+# ⚠️ 上の6打ち切り（予測は 2026-05-02〜08-29）は、確率で絞る条件を
+# **探すのに使ってしまった**（2026-08-31）。同じデータで確かめても意味がない。
+# 確かめ用に、一度も使っていない 2〜4月ぶんを別ファイルへ作れるようにする。
+# 予測期間が 05-02 に触れないよう打ち切りを選ぶこと。
+#     python scripts/wf_store.py --out data/processed/wf_holdout.db \
+#            --cutoffs 2026-02-01,2026-02-21,2026-03-13,2026-04-02
+
 DDL = """
 CREATE TABLE IF NOT EXISTS picks(
   cutoff TEXT, race_date TEXT, stadium TEXT, race_no INT, grade TEXT,
@@ -122,14 +129,21 @@ def collect(model, cutoff, d1, d2):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=str(OUT))
+    ap.add_argument("--cutoffs", default=",".join(CUTOFFS))
+    a = ap.parse_args()
+    out, cutoffs = Path(a.out), [x.strip() for x in a.cutoffs.split(",") if x.strip()]
+
     init_db(load_config())
     seed = load_config()["model"].get("random_state", 42)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(OUT)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(out)
     con.execute("DROP TABLE IF EXISTS picks")
     con.execute(DDL)
     total = 0
-    for cu in CUTOFFS:
+    for cu in cutoffs:
         d1 = (pd.Timestamp(cu) + pd.Timedelta(days=1)).date().isoformat()
         d2 = (pd.Timestamp(cu) + pd.Timedelta(days=HORIZON)).date().isoformat()
         m, ntr = train_at(cu, seed)
@@ -144,7 +158,7 @@ def main():
         con.commit()
         total += len(rows)
         print(f"打ち切り {cu}（訓練 {ntr}レース）→ {d1}〜{d2}  {len(rows)}行")
-    print(f"\n保存: {OUT}  合計 {total}行 / "
+    print(f"\n保存: {out}  合計 {total}行 / "
           f"{con.execute('SELECT COUNT(DISTINCT race_date||stadium||race_no) FROM picks').fetchone()[0]}レース")
     con.close()
 
