@@ -217,7 +217,17 @@ const CONFIDENCE = {
   sanrenfuku:  { cuts: [0.227, 0.285, 0.354], hit: [0.152, 0.215, 0.264, 0.349] },
   sanrentan:   { cuts: [0.061, 0.086, 0.117], hit: [0.038, 0.082, 0.104, 0.153] },
 };
-const GRADES = ["C", "B", "A", "S"];
+// ⚠️ 段階は**的中率そのもの**で切る。四分位で切ってはいけない。
+// 2026-08-31 に最初そうしたところ、上位25%を機械的にSと呼ぶので
+// **常に全体の25%がS**になり、「S」が何も選んでいなかった（243件）。
+// 的中率で切れば賭式をまたいで同じ意味になる:「S＝7割以上当たる」。
+// 3連単はどの帯でもSにならない（最上位でも15%）が、それが事実。
+const GRADE_BY_HIT = [
+  { g: "S", min: 0.70, label: "7割以上あたる" },
+  { g: "A", min: 0.50, label: "半分以上あたる" },
+  { g: "B", min: 0.30, label: "3割以上あたる" },
+  { g: "C", min: 0.00, label: "3割未満" },
+];
 
 // その買い目の確度。段階と、その帯の**実測**的中率を返す。
 function confidenceOf(bet) {
@@ -226,7 +236,9 @@ function confidenceOf(bet) {
   const p = bet.model_prob || 0;
   let i = 0;
   while (i < c.cuts.length && p >= c.cuts[i]) i++;
-  return { grade: GRADES[i], rank: i, hit: c.hit[i] };
+  const hit = c.hit[i];
+  const gr = GRADE_BY_HIT.find(x => hit >= x.min) || GRADE_BY_HIT[3];
+  return { grade: gr.g, label: gr.label, band: i, hit };
 }
 
 // 既定の一覧に出すか＝確度が最上位(S)か。
@@ -236,7 +248,7 @@ function isRecommended(bet) {
   if (!bet) return false;
   if (isPurchased(bet)) return true;
   const c = confidenceOf(bet);
-  return !!c && c.grade === "S";
+  return !!c && c.hit >= 0.70;      // S = 実測で7割以上あたる帯
 }
 
 function tierBadge(t) {
@@ -251,8 +263,8 @@ function tierBadge(t) {
 function confBadge(bet) {
   const c = confidenceOf(bet);
   if (!c) return "";
-  return `<span class="conf conf--${c.grade}" title="確度 ${c.grade}：`
-       + `この確率帯の実測的中率（未使用データ10,809レース）。`
+  return `<span class="conf conf--${c.grade}" title="確度 ${c.grade}（${c.label}）：`
+       + `この確率帯の実測的中率（未使用データ10,809レース・誤差±1〜2pt）。`
        + `⚠️ 当たりやすいぶん配当は低く、回収率は100%未満です">`
        + `${c.grade} <b>的中${(c.hit * 100).toFixed(0)}%</b></span>`;
 }
@@ -776,13 +788,14 @@ function renderBets() {
   const note = document.createElement("div");
   note.className = "buy-note";
   note.innerHTML = state.betsView === "buy"
-    ? `各賭式で<strong>確率が上位25%</strong>の買い目だけ。`
-      + `カードの <b>S 的中◯%</b> はその帯の実測的中率です`
-      + `（未使用データ10,809レース・誤差±1〜2pt）。`
-      + `<strong>⚠️ 当たりやすいぶん配当は低く、回収率は86〜97%で`
+    ? `<b>S＝実測で7割以上あたる</b>買い目だけ。届くのは複勝と単勝だけで、`
+      + `3連単はどの帯でもSになりません（最上位でも15%）。`
+      + `的中率は未使用データ10,809レースの実測（誤差±1〜2pt）。`
+      + `<strong>⚠️ 当たりやすいぶん配当は低く、回収率は93〜96%で`
       + `100%未満です。</strong>`
-    : `全賭式・全レースの総当たりです。カードの <b>S/A/B/C</b> は確度の段階で、`
-      + `数字はその帯の実測的中率（未使用データ10,809レース）。`;
+    : `全賭式・全レースの総当たり。<b>S</b>=7割以上 / <b>A</b>=半分以上 / `
+      + `<b>B</b>=3割以上 / <b>C</b>=3割未満 あたる帯です`
+      + `（未使用データ10,809レースの実測）。`;
   filterArea.appendChild(note);
 
   // EV説明トグル
@@ -863,16 +876,11 @@ function renderBets() {
     if (state.betsSort === "prob") {
       // 確度の段階が先、同じ段階なら帯の中での位置で比べる。
       // 生の確率順にすると複勝ばかりが上に来る（賭式で水準が違う）。
-      const ca = confidenceOf(a), cb = confidenceOf(b);
-      const d = ((cb && cb.rank) || 0) - ((ca && ca.rank) || 0);
+      // 実測の的中率そのもので並べる。賭式をまたいで比較できる唯一の量。
+      const h = x => ((confidenceOf(x) || {}).hit || 0);
+      const d = h(b) - h(a);
       if (d) return d;
-      const m = x => {
-        const c = CONFIDENCE[x.bet_type];
-        if (!c) return 0;
-        const lo = c.cuts[(confidenceOf(x) || {}).rank - 1] || 0;
-        return (x.model_prob || 0) - lo;
-      };
-      return m(b) - m(a);
+      return (b.model_prob || 0) - (a.model_prob || 0);
     }
     if (state.betsSort === "ev") return (b.expected_value || 0) - (a.expected_value || 0);
     if (a.stadium_name !== b.stadium_name) return a.stadium_name.localeCompare(b.stadium_name, "ja");

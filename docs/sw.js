@@ -1,4 +1,4 @@
-const CACHE_NAME = "boatrace-v19";
+const CACHE_NAME = "boatrace-v20";
 
 // v5: index.html / アイコンを追加。これらが無いとオフラインでアプリ自体が
 //     開けず、PWA として成立していなかった。addAll は1件でも失敗すると

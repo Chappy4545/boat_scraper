@@ -73,7 +73,10 @@ BASE = {"tansho": 73.6, "nirenfuku": 74.2, "sanrenfuku": 74.4, "sanrentan": 74.8
 JP = {"tansho": "単勝", "fukusho": "複勝", "kakurenfuku": "拡連複",
       "nirenfuku": "2連複", "sanrenfuku": "3連複", "sanrentan": "3連単"}
 # payouts の bet_type。複勝だけ日本語のまま入っている（文字化けして見えるが実体は「複勝」）
-PAYOUT_KEY = {"fukusho": "複勝"}
+# 2026-08-31 まで payouts に複勝だけ日本語で入っていたので橋渡しが要った。
+# 発生源（official.BET_TYPE_MAP の登録漏れ）を直し、DBも移行したので空でよい。
+# ⚠️ 残してあるのは、古い DB を相手に回すことがあるため。
+PAYOUT_KEY: dict[str, str] = {}
 
 
 def probs_for(exp_s, bt):
