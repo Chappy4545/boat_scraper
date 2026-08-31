@@ -32,7 +32,7 @@ import json
 import os
 import shutil
 import sys
-from datetime import date
+from datetime import date, timedelta
 from itertools import combinations, permutations
 from pathlib import Path
 
@@ -111,6 +111,58 @@ class FakeScraper:
 
     def parse_pay_summary(self, html):
         return [(STADIUM[0], rn) for rn in self.FINISHED]
+
+    # cmd_predict_cloud と _catchup_missed_results はここを通る。
+    # 「その日ぶんの出走表・オッズ・結果」をまとめて返す入口。
+    def collect_day(self, d, max_workers=5, skip_before_info=True,
+                    skip_odds=False, skip_results=False):
+        entries = pd.DataFrame([
+            {"stadium_code": STADIUM[0], "race_date": d, "race_no": rn,
+             "boat_no": b, "racer_no": 1000 + b, "racer_name": f"選手{b}",
+             "racer_class": "A1", "age": 30, "weight": 52.0,
+             "f_count": 0, "l_count": 0, "avg_st": 0.16,
+             "motor_no": b, "boat_no_equipment": b,
+             "national_win_rate": 6.0 - b * 0.3, "national_top2_rate": 40.0,
+             "national_top3_rate": 60.0, "local_win_rate": 6.0 - b * 0.3,
+             "local_top2_rate": 40.0, "local_top3_rate": 60.0,
+             "motor_top2_rate": 40.0, "motor_top3_rate": 60.0,
+             "boat_top2_rate": 38.0, "boat_top3_rate": 58.0,
+             "grade": "一般", "race_type": "予選", "is_night": False,
+             "closing_time": f"1{rn}:30"}
+            for rn in RACES for b in self._B])
+
+        def _odds(name, getter):
+            frames = []
+            for rn in RACES:
+                df = getter().copy()
+                df["stadium_code"] = STADIUM[0]
+                df["race_date"] = d
+                df["race_no"] = rn
+                frames.append(df)
+            return pd.concat(frames, ignore_index=True)
+
+        out = {
+            "racelist": entries,
+            "odds_tansho": _odds("tansho", self.get_odds_tansho),
+            "odds_nirenfuku": _odds("nirenfuku", self.get_odds_nirenfuku),
+            "odds_nirentan": _odds("nirentan", self.get_odds_nirentan),
+            "odds_sanrenfuku": _odds("sanrenfuku", self.get_odds_sanrenfuku),
+            "odds_sanrentan": _odds("sanrentan", self.get_odds_sanrentan),
+        }
+        if not skip_results:
+            rr, py = [], []
+            for rn in RACES:
+                r1, p1 = self.get_race_result_and_payouts(STADIUM[0], d, rn)
+                r1 = r1.copy(); r1["stadium_code"] = STADIUM[0]
+                r1["race_date"] = d; r1["race_no"] = rn
+                r1["racer_no"] = [1000 + b for b in r1["boat_no"]]
+                r1["entry_course"] = r1["boat_no"]
+                p1 = p1.copy(); p1["stadium_code"] = STADIUM[0]
+                p1["race_date"] = d; p1["race_no"] = rn
+                rr.append(r1); py.append(p1)
+            out["race_result"] = pd.concat(rr, ignore_index=True)
+            out["payouts"] = pd.concat(py, ignore_index=True)
+        return out
 
     # 着順は 1,2,3,4,5,6 の順で固定（fixture の払戻と揃える）
     def get_race_result_and_payouts(self, stadium_code, race_date, race_no):
@@ -510,6 +562,273 @@ def test_夜の判定で記録用の賭式が損益に入らない(day):
                            .filter(Race.race_date == D).all())
                if not b.is_pass and b.bet_type not in buy]
         assert not bad, f"記録用の賭式が損益に入っている: {[b.bet_type for b in bad]}"
+
+
+# ── 朝: クラウドが使い捨てDBで予測を作る（cmd_predict_cloud）──────
+# 毎朝ここが動いて一日が始まる。ここが黙って何もしないと買い目が0本になる。
+
+def test_クラウドの朝の予測が一日ぶんを書き出す(day, monkeypatch):
+    """履歴DBなしで probs / races / オッズ退避まで揃うこと。"""
+    import main
+    monkeypatch.setattr(main, "date", _FixedDate)      # 「今日」を D にする
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+
+    races = _load(day, "races")
+    probs = _load(day, "probs")
+    assert races, "races が書かれていない"
+    assert len(races) == len(RACES), f"レース数 {len(races)}"
+    for r in races:
+        assert r["entries"], f"R{r['race_no']} の出走表が空"
+        assert r["predictions"], f"R{r['race_no']} の予測が空"
+        assert r["closing_time"], f"R{r['race_no']} の締切時刻が無い"
+
+    buy, paper = _cfg_types()
+    got = {c["bet_type"] for e in probs["races"] for c in e["combinations"]}
+    assert (buy | paper) <= got, f"賭式が欠けている: 出た={got}"
+
+    # オッズは過去日に遡れない。ここで退避しないと永久に失われる。
+    gz = day / "docs" / "data" / f"odds_raw_{D}.json.gz"
+    assert gz.exists() and gz.stat().st_size > 0, "オッズを退避していない"
+
+
+def test_クラウドの朝は始まった日を作り直さない(day, monkeypatch):
+    """⚠️ 日中に呼ばれても、その日の記録を消してはいけない。
+
+    GitHub の schedule はベストエフォートで、実測15〜44分遅れる。遅れて
+    昼に動くと `cmd_predict` が買い目を入れ直し、確定した買い目・判定結果を
+    消す。それらは JSON にしか無い日がある。
+    """
+    import main
+    monkeypatch.setattr(main, "date", _FixedDate)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+    main.cmd_refresh_odds(D, max_workers=1)
+    _mark_final(day)
+    before = _load(day, "bets")
+    assert before, "前提: 買い目がある"
+
+    main.cmd_predict_cloud(D, max_workers=1)          # 2回目（遅れて起動）
+    after = _load(day, "bets")
+    assert len(after) == len(before), \
+        f"確定済みの日を作り直した: {len(before)}本 → {len(after)}本"
+    assert all(b["is_final_pick"] for b in after), "確定フラグが落ちている"
+
+
+# ── 取りこぼしの穴埋め（_catchup_missed_results）──────────────
+# PC が止まった日を後から埋める経路。⚠️ ここは過去に
+# 「レース後に作り直した買い目が損益に混ざる」事故を起こしている。
+
+def _make_catchup_target(day):
+    """その日を穴埋めの対象にする（着順が無く、未判定の買う買い目がある）。
+
+    ⚠️ これを作らないと、その日は穴埋めのどの枝にも入らず、テストは
+    「何も起きなかったので通る」状態になる。2026-08-31 に実際に
+    2本続けてこの空振りを書いた。**対象に入っていることまで確かめる。**
+    """
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race, RaceResult
+    with get_session() as s:
+        for rr in s.query(RaceResult).all():
+            s.delete(rr)
+    with get_session() as s:
+        rid = s.query(Race).filter(Race.race_date == D).first().id
+        s.add(Bet(race_id=rid, model_version="v1",
+                  bet_type="nirenfuku", combination="1-2",
+                  model_prob=0.4, odds=2.6, expected_value=1.04,
+                  recommended_amount=500, is_pass=False, is_final_pick=True,
+                  is_hit=None))
+    with get_session() as s:
+        assert s.query(RaceResult).count() == 0
+        assert s.query(Bet).filter(Bet.is_pass == False,          # noqa: E712
+                                   Bet.is_hit.is_(None)).count() == 1
+
+
+def test_穴埋めは当日の記録を作り直さない(day, monkeypatch):
+    """⚠️ レース後に作った買い目は確定オッズで選ぶことになる。
+
+    2026-08-17 の復旧で 08-16 の朝の予測（690件と probs）が今日づけの
+    再予測で消えた。レース後に作り直した買い目は損益の集計から外れる
+    （`date(created_at) <= race_date` の条件）ので、作り直すとその日の
+    記録が丸ごと検証に使えなくなる。当日の記録があるなら着順を足すだけ。
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    monkeypatch.setattr(main, "date", _FixedDate)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+    main.cmd_refresh_odds(D, max_workers=1)
+    _mark_final(day)
+    _make_catchup_target(day)           # ここを通らないとテストが空振りする
+
+    picks_before = {(b["stadium_name"], b["race_no"], b["bet_type"],
+                     b["combination"]) for b in _load(day, "bets")
+                    if b.get("is_final_pick")}
+    assert picks_before, "前提: 確定した買い目がある"
+    with get_session() as s:
+        ids_before = {b.id for b, _r in
+                      s.query(Bet, Race).join(Race, Bet.race_id == Race.id)
+                      .filter(Race.race_date == D).all()}
+    assert len(ids_before) > 100, f"前提: 当日の買い目が DB にある({len(ids_before)})"
+
+    monkeypatch.setattr(main, "date", _FixedDate.plus(1))
+    main._catchup_missed_results(lookback_days=1, max_workers=1)
+
+    # ⚠️ 件数の増減では見ない。cmd_judge が JSON の買い目を DB へ同期するので
+    # 増えるのが正常。また created_at でも見ない —— DB の既定値は実時刻
+    # (utcnow) なので、テストの日付を未来に置くと「レース後に作られた」が
+    # 原理的に観測できない（2026-08-31 にこれで空振りした）。
+    #
+    # 見るのは**行が入れ替わっていないか**。cmd_predict はそのレースの
+    # 買い目を model_version ごと削除して入れ直すので id が総取っ替えになる。
+    # 同期(_sync_bets_from_json)は行を消さず is_pass を変えるだけなので、
+    # 正常なら id は全部残る。
+    with get_session() as s:
+        ids_after = {b.id for b, _r in
+                     s.query(Bet, Race).join(Race, Bet.race_id == Race.id)
+                     .filter(Race.race_date == D).all()}
+    lost = ids_before - ids_after
+    assert not lost, (
+        f"当日の買い目 {len(lost)}/{len(ids_before)}件 が作り直された。"
+        f"レース後の再予測は確定オッズで選ぶことになり、損益の集計から外れる")
+
+    picks_after = {(b["stadium_name"], b["race_no"], b["bet_type"],
+                    b["combination"]) for b in _load(day, "bets")
+                   if b.get("is_final_pick")}
+    assert picks_before <= picks_after, \
+        f"当日の確定買い目が消えた: {picks_before - picks_after}"
+
+
+
+def test_穴埋めが買い目を別の日に入れない(day, monkeypatch):
+    """⚠️ 2026-08-23 に116件が別の日づけで入り、損益に混ざった。"""
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    monkeypatch.setattr(main, "date", _FixedDate)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+    main.cmd_refresh_odds(D, max_workers=1)
+    _mark_final(day)
+
+    monkeypatch.setattr(main, "date", _FixedDate.plus(1))
+    main._catchup_missed_results(lookback_days=1, max_workers=1)
+
+    with get_session() as s:
+        rows = (s.query(Bet, Race).join(Race, Bet.race_id == Race.id).all())
+        other = [(b.id, str(r.race_date)) for b, r in rows if r.race_date != D]
+        assert not other, f"{len(other)}件が別の日に入った: {other[:5]}"
+        # レース日より後に作られた買い目は確定オッズで選んだことになる
+        late = [b.id for b, r in rows
+                if b.created_at and b.created_at.date() > r.race_date]
+        assert not late, f"レース後に作られた買い目が {len(late)}件"
+
+
+def test_穴埋めが丸ごと取り逃した日を埋める(day, monkeypatch):
+    """⚠️ PC が止まった日。この枝が壊れていた頃に実際にデータを失っている。
+
+    旧実装は `race_cnt > 0` を条件にしており、レースが0件の日は永久に
+    対象外だった（2026-07-28〜31, 08-08〜09 が欠落）。
+
+    ⚠️ **5日前**を使う。前日だと `bet_cnt == 0` の枝でも拾われてしまい、
+    `race_cnt == 0` の枝を消しても通ってしまう（再収集の枝は直近3日だけ）。
+    2026-08-31 に前日で書いてこの空振りを踏んだ。
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Race, RaceResult
+    missed = D - timedelta(days=5)          # 再収集の窓(3日)より前
+
+    with get_session() as s:
+        assert s.query(Race).filter(Race.race_date == missed).count() == 0, \
+            "前提: その日のレースが1件も無い"
+
+    monkeypatch.setattr(main, "date", _FixedDate)   # 今日 = D
+    main._catchup_missed_results(lookback_days=7, max_workers=1)
+
+    with get_session() as s:
+        n_race = s.query(Race).filter(Race.race_date == missed).count()
+        n_res = (s.query(RaceResult).join(Race, RaceResult.race_id == Race.id)
+                 .filter(Race.race_date == missed).count())
+    assert n_race == len(RACES), f"レースを埋めていない: {n_race}件"
+    assert n_res > 0, "着順を埋めていない"
+
+
+def test_穴埋めが着順の無い日を判定できる状態にする(day, monkeypatch):
+    """買い目はあるが着順が無い日＝judge の前に落ちた日。
+
+    ⚠️ 買う買い目(is_pass=0)は cmd_predict では作られない。本番では
+    cmd_judge が JSON から同期して初めて DB に入る。合成データでは
+    EV の条件を満たす買い目が出ないことがあるので、ここでは検証したい
+    状態（買う買い目があり着順が無い）を直接作る。
+    2026-08-31 に、これを作らずに書いたため穴埋めがどの枝にも入らず、
+    テストが素通りした。
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race, RaceResult
+    monkeypatch.setattr(main, "date", _FixedDate)
+    _release_db()
+    main.cmd_predict_cloud(D, max_workers=1)
+    main.cmd_refresh_odds(D, max_workers=1)
+
+    with get_session() as s:            # 着順を消して「judge 前に落ちた日」に
+        for rr in s.query(RaceResult).all():
+            s.delete(rr)
+    with get_session() as s:
+        rid = s.query(Race).filter(Race.race_date == D).first().id
+        s.add(Bet(race_id=rid, model_version="v1",
+                  bet_type="nirenfuku", combination="1-2",
+                  model_prob=0.4, odds=2.6, expected_value=1.04,
+                  recommended_amount=500, is_pass=False, is_final_pick=True,
+                  is_hit=None))
+    with get_session() as s:
+        assert s.query(RaceResult).count() == 0, "前提: 着順が無い"
+        assert s.query(Bet).filter(Bet.is_pass == False,          # noqa: E712
+                                   Bet.is_hit.is_(None)).count() == 1, \
+            "前提: 未判定の買う買い目がある"
+
+    monkeypatch.setattr(main, "date", _FixedDate.plus(1))
+    main._catchup_missed_results(lookback_days=1, max_workers=1)
+
+    with get_session() as s:
+        assert s.query(RaceResult).count() > 0, "着順を取り直していない"
+        unjudged = (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                    .filter(Race.race_date == D, Bet.is_pass == False,   # noqa: E712
+                            Bet.is_hit.is_(None)).count())
+        assert unjudged == 0, f"判定されていない買い目が {unjudged}本"
+
+
+def _release_db():
+    """使い捨てDBのファイルを掴んだままにしない。
+
+    cmd_predict_cloud は BOAT_DB_URL のDBを消してから作り直す（前日の残りを
+    混ぜないため）。本番は新しいプロセスなので誰も掴んでいないが、テストは
+    fixture が既に開いている。Windows は使用中のファイルを消せない。
+    """
+    import src.ingestion.database as db
+    if db._engine is not None:
+        db._engine.dispose()
+
+
+class _FixedDate(date):
+    """`main.date.today()` を固定する。
+
+    cmd_predict_cloud / _catchup_missed_results は `date.today()` を見て
+    「今日か過去日か」を変える。実時間に任せると、動かす日によって
+    通ったり通らなかったりするテストになる。
+    """
+
+    _OFFSET = 0
+
+    @classmethod
+    def today(cls):
+        return D + timedelta(days=cls._OFFSET)
+
+    @classmethod
+    def plus(cls, days):
+        return type("_FixedDatePlus", (_FixedDate,), {"_OFFSET": days})
 
 
 # ── 監視（daily_check）─────────────────────────────
