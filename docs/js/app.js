@@ -82,6 +82,32 @@ function evColor(ev) {
   return "#90a4ae";                   // 71.6%。相対的には最もまし
 }
 
+// 表示している EV は「買う時点のオッズ」で計算している。そのオッズは
+// 締切までに縮むので、EV はそのぶん過大になっている。
+//
+// 2026-08-31 実測（実運用 492本・`scripts/odds_shrink.py`）:
+// 買った時のオッズ ÷ 確定オッズ の中央値
+//
+//     EV 1.2-1.5   1.292      EV 2.0-3.0   1.986
+//     EV 1.5-2.0   1.588      EV 3.0以上   3.333
+//     記録のみ     1.000  ← EVで選んでいないので縮まない
+//
+// **記録のみが 1.000** なのが決定的。縮みは市場の性質ではなく
+// 「EVが高い＝オッズが上振れしている組合せを選んでいる」ことの副作用
+// （optimizer's curse）。前半/後半の2窓で同じ関係が出た（EV3.0以上だけ
+// 本数不足で不一致）。→ memory: project_odds_board_vs_final
+const EV_SHRINK = [[3.0, 3.333], [2.0, 1.986], [1.5, 1.588], [0, 1.292]];
+
+// ⚠️ 縮みは「EVの値」の性質ではなく「**EVで選んだこと**」の性質。
+// EV で選んでいない買い目（rule="record" = 賭式ごとに確率最大の1点）は
+// 実測で縮み 1.000 だった。ここに係数をかけると、縮まない買い目まで
+// 割り引いて表示することになる。2026-08-31 に一度やりかけた。
+function realEv(ev, bet) {
+  if (bet && bet.rule === RECORD_RULE) return ev;   // EVで選んでいない
+  for (const [lo, f] of EV_SHRINK) if (ev >= lo) return ev / f;
+  return ev;
+}
+
 // ── バッジ生成 ──
 function gradeBadge(grade) {
   if (!grade || grade === "一般") return "";   // 一般は非表示（ノイズ削減）
@@ -615,6 +641,8 @@ const EV_EXPLAIN_HTML = `
     <span class="ev-tier" style="color:#e57373">2.5以上　実測 48.9%</span>
   </div>
   <p class="ev-info-desc">参考: 何も選ばず全部買うと 75.0%、無作為に買うと 74.2%。<strong>まだ損益分岐(100%)を超える買い方は見つかっていません。</strong></p>
+  <p class="ev-info-desc"><strong>「実質」とは</strong> — 表示中のEVは買う時点のオッズで計算しています。そのオッズは締切までに縮むので、EVはそのぶん過大です。実運用492本の実測（買った時のオッズ ÷ 確定オッズ）で割り戻したのが「実質」です。EVが高いほど縮みは大きく、EV3.0以上では約1/3になります。</p>
+  <p class="ev-info-desc">縮むのは市場の性質ではなく<strong>EVで選んだことの副作用</strong>です。同じ日に賭け金0で記録している買い目（EVで選んでいない）は縮み1.000でした。</p>
 </div>`;
 
 function renderBets() {
@@ -821,7 +849,9 @@ function buildBetCard(b) {
           ${b.closing_time ? `<span class="close-time">⏱${b.closing_time}</span>` : ""}
           ${finalBadge}
         </div>
-        <span class="bet-card__ev" style="color:${color}">EV ${ev.toFixed(2)}</span>
+        <span class="bet-card__ev" style="color:${color}">EV ${ev.toFixed(2)}
+          ${b.rule === RECORD_RULE ? ""
+            : `<span class="ev-real">実質 ${realEv(ev, b).toFixed(2)}</span>`}</span>
       </div>
       <div class="bet-card__body">
         <div class="bet-card__combo">

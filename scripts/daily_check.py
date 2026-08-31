@@ -528,21 +528,51 @@ def main() -> None:
     # 潰したのと同じ「オッズの上振れを拾う」構造。
     # ⚠️ 危険は 1.0 を**上回る**方向。1.0未満は推定が保守的なだけで安全側。
     # 見込みオッズは DB に列が無いので expected_value / model_prob で戻す。
-    ratio_max = float(rule.get("monitor_ratio_max") or 1.15)
-    with get_engine().connect() as conn:
-        rs = [r[0] for r in conn.execute(text(f"""
-            SELECT (b.expected_value / b.model_prob) / o.odds
-            FROM bets b JOIN races r ON r.id = b.race_id
-            JOIN odds o ON o.race_id = b.race_id AND o.bet_type = b.bet_type
-                       AND o.combination = b.combination AND o.is_final = 1
-            WHERE b.pass_reason = :cr AND b.model_prob > 0 AND o.odds > 0
-              AND r.race_date >= :s"""), {"cr": CANDIDATE_REASON, "s": live_since})]
-    if len(rs) >= 20:
-        rs.sort()
-        med = rs[len(rs) // 2]
-        checks.append(("見込みオッズの精度", med <= ratio_max,
-                       f"推定/確定 中央値 {med:.2f}（{len(rs)}本・上限{ratio_max:.2f}）"
-                       + ("　※過大評価" if med > ratio_max else "")))
+    # ⚠️ 2026-08-31 に判定の仕方を変えた。
+    # 以前は「中央値 <= 1.15」という**水準**で見ており、毎晩 NG が出ていた
+    # （実測 1.36）。だがこの縮みは**構造的**で、EV で選ぶ限り必ず起きる:
+    #
+    #     EV 1.2-1.5  1.292 / EV 1.5-2.0  1.588
+    #     EV 2.0-3.0  1.986 / EV 3.0以上  3.333
+    #     記録のみ    1.000  ← EV で選んでいないので縮まない
+    #
+    # 縮みは市場の性質ではなく「EVが高い＝オッズが上振れしている組合せを
+    # 選んでいる」ことの副作用（optimizer's curse）。水準で鳴らし続けても
+    # 直しようがなく、**本物の異常が埋もれる**。
+    # 見るべきは「いつもと違うか」。直近7日と、それ以前を比べる。
+    # `scripts/odds_shrink.py` が層ごとの内訳を出す。
+    def _ratios(since, until=None):
+        cond = "AND r.race_date < :u" if until else ""
+        p = {"s": since, "cr": CANDIDATE_REASON}
+        if until:
+            p["u"] = until
+        with get_engine().connect() as conn:
+            return sorted(r[0] for r in conn.execute(text(f"""
+                SELECT (b.expected_value / b.model_prob) / o.odds
+                FROM bets b JOIN races r ON r.id = b.race_id
+                JOIN odds o ON o.race_id = b.race_id AND o.bet_type = b.bet_type
+                           AND o.combination = b.combination AND o.is_final = 1
+                WHERE b.pass_reason = :cr AND b.model_prob > 0 AND o.odds > 0
+                  AND b.expected_value IS NOT NULL
+                  AND r.race_date >= :s {cond}"""), p))
+
+    def _med(xs):
+        return xs[len(xs) // 2] if xs else float("nan")
+
+    recent_from = str(d - timedelta(days=7))
+    recent, past = _ratios(recent_from), _ratios(live_since, recent_from)
+    if len(recent) >= 20 and len(past) >= 20:
+        mr, mp_ = _med(recent), _med(past)
+        # 悪化（縮みが強まる）方向だけを異常とする。改善は歓迎。
+        worse = mr > mp_ * 1.25
+        checks.append(("見込みオッズの縮み", not worse,
+                       f"直近7日 {mr:.2f} / それ以前 {mp_:.2f}"
+                       f"（{len(recent)}本 vs {len(past)}本）"
+                       + ("　※急に強まっています" if worse else "")))
+    elif len(recent) + len(past) >= 20:
+        allr = sorted(recent + past)
+        checks.append(("見込みオッズの縮み", True,
+                       f"中央値 {_med(allr):.2f}（{len(allr)}本・比較にはまだ日数不足）"))
     else:
         checks.append(("見込みオッズの精度", True,
                        f"{len(rs)}本（20本以上で判定）"))
