@@ -160,6 +160,8 @@ def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
     #     2026-01〜04 100% / 05 74% / 06〜07 100% / 08 33% / 09 **0%**
     # どちらも**気づいたのは何ヶ月も後**。件数の検査では出ないので専用に見る。
     # レース後も取得できるので、欠けても後から埋められる（永久喪失ではない）。
+    # ⚠️ 分母は「着順のあるレース」。夜間処理が走っていない時点では
+    # 直前情報が無くて当然なので、それを異常と呼ぶと毎日昼に誤報が出る。
     n_bi = _before_info_ratio(d)
     if n_bi is not None:
         n_race, n_have = n_bi
@@ -328,10 +330,15 @@ def _night_run_check() -> tuple[str, bool, str]:
 
 
 def _before_info_ratio(d) -> tuple[int, int] | None:
-    """その日の (レース数, 直前情報のあるレース数)。DB を読めなければ None。
+    """その日の (着順のあるレース数, 直前情報のあるレース数)。
 
-    ⚠️ 夜の判定より前に呼ばれると当然 0 になる。判定後に走らせること
-    （daily_judge.bat は collect_results → judge → daily_check の順）。
+    ⚠️ **分母は「着順のあるレース」**。直前情報は夜の `collect_day_results` が
+    着順と一緒に集めるので、夜間処理がまだ走っていない日／走らなかった日に
+    直前情報が無いのは当然で、それを異常と呼ぶと毎日昼に誤報が出る。
+    「夜が走ったのに直前情報だけ無い」を捕まえたい。
+
+    着順が1件も無ければ None（＝検査を出さない）。確認できないことを
+    「異常なし」とも「異常」とも報告しない。
     """
     try:
         from sqlalchemy import text as _t
@@ -340,12 +347,15 @@ def _before_info_ratio(d) -> tuple[int, int] | None:
         from src.utils.helpers import load_config
         init_db(load_config())
         with get_engine().connect() as c:
-            n = c.execute(_t("SELECT COUNT(*) FROM races WHERE race_date = :d"),
-                          {"d": str(d)}).scalar() or 0
+            n = c.execute(_t(
+                "SELECT COUNT(DISTINCT r.id) FROM races r "
+                "JOIN race_results rr ON rr.race_id = r.id "
+                "WHERE r.race_date = :d"), {"d": str(d)}).scalar() or 0
             k = c.execute(_t(
                 "SELECT COUNT(DISTINCT b.race_id) FROM before_info b "
-                "JOIN races r ON r.id = b.race_id WHERE r.race_date = :d"),
-                {"d": str(d)}).scalar() or 0
+                "JOIN races r ON r.id = b.race_id "
+                "JOIN race_results rr ON rr.race_id = r.id "
+                "WHERE r.race_date = :d"), {"d": str(d)}).scalar() or 0
         return (int(n), int(k)) if n else None
     except Exception:
         return None

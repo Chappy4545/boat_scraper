@@ -205,8 +205,8 @@ def day(tmp_path, monkeypatch):
     monkeypatch.setattr("src.scraping.official.BoatRaceScraper", FakeScraper)
 
     from src.ingestion.database import init_db, get_session
-    from src.ingestion.models import (Race, RaceEntry, RaceResult, Payout,
-                                      Stadium, Prediction)
+    from src.ingestion.models import (BeforeInfo, Race, RaceEntry, RaceResult,
+                                      Payout, Stadium, Prediction)
     from src.utils.helpers import load_config
     import src.export as E
     monkeypatch.setattr(E, "DATA_DIR", tmp_path / "docs" / "data")
@@ -242,6 +242,15 @@ def day(tmp_path, monkeypatch):
             for order, boat in enumerate([1, 2, 3, 4, 5, 6], start=1):
                 s.add(RaceResult(race_id=i, boat_no=boat, arrival_order=order,
                                  racer_no=1000 + boat, entry_course=boat))
+    # 直前情報。⚠️ **着順と一緒に入れる。** 本番では夜の collect_day_results が
+    # 両方まとめて集めるので、着順だけあって直前情報が無い日は本番に存在しない。
+    # 片方だけ入れると「テスト環境が本番より綺麗／汚い」状態になり、
+    # 2026-09-03 に追加した充足率の検査が合成日で誤発火した。
+    with get_session() as s:
+        for i, _rn in enumerate(RACES, start=1):
+            for boat in range(1, 7):
+                s.add(BeforeInfo(race_id=i, boat_no=boat, entry_course=boat,
+                                 exhibition_time=6.70 + boat * 0.01, tilt=0.0))
     with get_session() as s:
         for i, _rn in enumerate(RACES, start=1):
             for bt, cb, pay in (("tansho", "1", 170), ("複勝", "1", 110),
