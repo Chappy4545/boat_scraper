@@ -81,6 +81,31 @@ E は土台が市場を見ないので**構造上その負け方をしない**�
 どれも市場を下回らなければ、**この方向は打ち切る**と明記して報告する。
 「惜しい」「もう少しデータがあれば」を理由に条件を足さない。
 
+━━━ 以下は実行後（2026-09-03）に書き足した結果の要約 ━━━
+⚠️ 上の事前登録部分は結果を見る前に書いてコミット済み（`a6aa29c`）。
+   ここから下だけが事後の追記。
+
+結果: **主判定は通った。しかし回収率は逆に悪化した。**
+
+    案            対数損失(1)  対数損失(2)   確率最大の1点の回収率(1/2)
+    市場そのもの     0.19162    0.19102      76.0% / 75.2%
+    A 現行         0.19616    0.19589      **81.9% / 81.9%**  ← 回収率は最良
+    E 二段階補正 ⭐  0.19014    0.19013      78.6% / 76.8%     ← 対数損失は最良
+                   ↑両分割で市場に勝ち
+
+⭐⭐ **精度が上がるほど回収率が下がる。** 3つとも順序が完全に一貫している。
+パリミュチュエルでは「正確になる＝群衆と一致する＝群衆が買い込んだ
+低配当の券を選ぶ」ため。E は市場に寄せる（係数 model 0.277 / market 0.754）
+ので確率は良くなるが、**賭けられる唯一の材料である「市場との食い違い」を
+捨ててしまう**。
+
+逆に A は確率で市場に負けているのに、選び手としては市場を 5.9pt 上回る。
+A の誤差は群衆の買い方と相関していないので、群衆が買い忘れた券を拾える。
+
+**結論: E を本番に入れてはいけない。** 対数損失は改善するが回収率は
+81.9% → 78.6% に悪化する（両期間で再現）。
+「モデルの良さ＝確率の正確さ」という前提が、賭ける場面では成り立たない。
+
 使い方
 ------
     python scripts/market_trial.py                 # 既定のウォークフォワード
@@ -440,6 +465,40 @@ def fukusho_check(results: dict) -> None:
               f"{d:+11.5f} [{lo:+.5f},{hi:+.5f}]{mark}")
 
 
+def roi_check(results: dict, label: str) -> None:
+    """⭐ 記述的な観察: 確率が最大の1点を買ったときの回収率。
+
+    ⚠️ **判定ではない**（事前登録していない）。だが必ず出すこと。
+    対数損失で勝っても回収率で負けることがあるからで、実際そうなった。
+
+    ⚠️ 選択に**オッズを使わない**（確率が最大の1点だけ）。
+    確定オッズで選ぶと「買う時点で知り得ない値で選ぶ」ことになり必ず良く見える。
+    → [[project_backtest_leak]]
+    """
+    with get_engine().connect() as c:
+        pay = {(int(r), str(cb)): float(p) for r, cb, p in c.execute(text(
+            "SELECT race_id, combination, payout FROM payouts "
+            "WHERE bet_type = :bt"), {"bt": BT}).fetchall()}
+    rng = np.random.default_rng(0)
+    print(f"\n--- 記述: 確率が最大の1点を買ったら（{label}）---")
+    print(f"{'選び方':18} {'本数':>6} {'的中率':>7} {'回収率':>8} {'95%区間':>16}")
+    for name, df in results.items():
+        if df.empty or name.startswith(("A'", "E0", "E1", "B ")):
+            continue
+        d = df.assign(ret=[pay.get((r, cb), 0.0) / 100.0 if y else 0.0
+                           for r, cb, y in zip(df.race_id, df.cb, df.y)])
+        for who, col in ((name, "pm"), ("（市場）", "pk")):
+            s = d.loc[d.groupby("race_id")[col].idxmax()]
+            r = s["ret"].values
+            bs = np.array([r[rng.integers(0, len(r), len(r))].mean()
+                           for _ in range(2000)])
+            lo, hi = np.percentile(bs, [2.5, 97.5])
+            print(f"{who:18} {len(s):6,} {s.y.mean()*100:6.1f}% "
+                  f"{r.mean()*100:7.1f}% [{lo*100:6.1f},{hi*100:6.1f}]")
+            if who == "（市場）":
+                break
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="B/C を省いて速く回す")
@@ -454,6 +513,7 @@ def main() -> None:
     for i, (train_to, calib, test) in enumerate(SPLITS, 1):
         print(f"\n########## 分割 {i}/{len(SPLITS)} ##########")
         res = run_split(feat, mkt, train_to, calib, test, a.quick)
+        roi_check(res, f"検証 {test[0]}〜{test[1]}")
         if i == 1:
             fukusho_check(res)
     print("\n⚠️ 判定は E（主）と D（副・α=0.025）のみ。A/B/C/E0/E1 は参考・対照。")
