@@ -152,6 +152,22 @@ def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
                        f"{len(got & want)}/{len(want)}賭式"
                        + (f"　※欠け {' '.join(sorted(miss))}" if miss else "")))
 
+    # 直前情報（展示タイム・気象）が集まっているか。
+    #
+    # ⚠️⚠️ **これは2回止まっている。** 2026-05-21 に一度止まり（推論時に
+    # 中央値で埋まるだけの列になっていた）、06-10 に直したはずが同じ形で
+    # また止まった。09-03 に気づいた時点で:
+    #     2026-01〜04 100% / 05 74% / 06〜07 100% / 08 33% / 09 **0%**
+    # どちらも**気づいたのは何ヶ月も後**。件数の検査では出ないので専用に見る。
+    # レース後も取得できるので、欠けても後から埋められる（永久喪失ではない）。
+    n_bi = _before_info_ratio(d)
+    if n_bi is not None:
+        n_race, n_have = n_bi
+        ratio = n_have / n_race if n_race else 0.0
+        checks.append(("直前情報の収集", ratio >= 0.8,
+                       f"{n_have}/{n_race}レース ({ratio*100:.0f}%)"
+                       + ("　※夜の収集が集めていません" if ratio < 0.8 else "")))
+
     # 一度確定した買い目が消えていないか。
     # 日中に消えてよいのは「まだ確定していない買い目」だけ（オッズが動けば
     # EV が変わるので入れ替わる）。**確定したものが消えるのは記録の破壊**で、
@@ -309,6 +325,30 @@ def _night_run_check() -> tuple[str, bool, str]:
     return ("夜間処理の完走", not dead,
             f"直近{len(past)}回中 未完走{len(dead)}回"
             + (f"　※{dead[-1]} が途中で止まっています" if dead else ""))
+
+
+def _before_info_ratio(d) -> tuple[int, int] | None:
+    """その日の (レース数, 直前情報のあるレース数)。DB を読めなければ None。
+
+    ⚠️ 夜の判定より前に呼ばれると当然 0 になる。判定後に走らせること
+    （daily_judge.bat は collect_results → judge → daily_check の順）。
+    """
+    try:
+        from sqlalchemy import text as _t
+
+        from src.ingestion.database import get_engine, init_db
+        from src.utils.helpers import load_config
+        init_db(load_config())
+        with get_engine().connect() as c:
+            n = c.execute(_t("SELECT COUNT(*) FROM races WHERE race_date = :d"),
+                          {"d": str(d)}).scalar() or 0
+            k = c.execute(_t(
+                "SELECT COUNT(DISTINCT b.race_id) FROM before_info b "
+                "JOIN races r ON r.id = b.race_id WHERE r.race_date = :d"),
+                {"d": str(d)}).scalar() or 0
+        return (int(n), int(k)) if n else None
+    except Exception:
+        return None
 
 
 def _final_picks_lost(d, data_dir: Path) -> tuple[int, int] | None:

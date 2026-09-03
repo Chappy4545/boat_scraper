@@ -982,14 +982,39 @@ class BoatRaceScraper(BaseScraper):
                     results.append(key)
         return sorted(results)
 
-    def collect_day_results(self, race_date: date, max_workers: int = 5) -> dict:
-        """払戻一覧ページから終了済みレースを特定し、結果・払戻のみ収集する。"""
+    def collect_day_results(self, race_date: date, max_workers: int = 5,
+                            with_before_info: bool = True) -> dict:
+        """払戻一覧ページから終了済みレースを特定し、結果・払戻を収集する。
+
+        with_before_info=True のとき、直前情報（展示タイム・チルト等）と気象も
+        同時に集める。
+
+        ⚠️ なぜ夜にここで集めるのか
+        --------------------------
+        直前情報はレース20〜30分前に公開されるので、**朝の一括収集では
+        まだ存在しない**（`_collect_one_stadium` は skip_before_info=True が既定）。
+        一方レース後も残るので、終了レースを回るこの経路が唯一まともな置き場所。
+
+        2026-05-21 に一度収集が止まり、推論時に中央値で埋まる列になっていた
+        （[[project_before_info_disabled]]）。2026-06-10 に直したはずが、
+        **同じ形でまた止まっていた**:
+
+            2026-01〜04 100% / 05 74% / 06〜07 100% / 08 33% / 09 **0%**
+
+        原因は `cmd_update` が skip_before_info=True 固定で、夜のこの経路も
+        集めていなかったこと。どの経路も集めていなかった。
+        再発を見張るため `scripts/daily_check.py` に充足率の検査を置く。
+
+        通信量: 終了レース1件につき beforeinfo ページ1回（気象と同じページ）。
+        """
         pay_params = {"hd": race_date.strftime("%Y%m%d")}
         html = self._fetch_raw(self._url("pay"), pay_params)
         finished = self.parse_pay_summary(html)
-        logger.info(f"終了済みレース: {len(finished)}件")
+        logger.info(f"終了済みレース: {len(finished)}件"
+                    + ("（直前情報も収集）" if with_before_info else ""))
 
-        merged: dict[str, list] = {"race_result": [], "payouts": []}
+        merged: dict[str, list] = {"race_result": [], "payouts": [],
+                                   "before_info": [], "weather": []}
         # 中身が返ってきたレース。例外を出さずに空を返す経路があるので、
         # 「失敗しなかった」ではなく「取れた」を数える。
         got: set = set()
@@ -1001,6 +1026,13 @@ class BoatRaceScraper(BaseScraper):
             if py is not None and not py.empty:
                 merged["payouts"].append(py)
 
+        def _take_bi(bi, wx) -> None:
+            """直前情報・気象。取れなくても結果の収集は止めない。"""
+            if bi is not None and not bi.empty:
+                merged["before_info"].append(bi)
+            if wx is not None and not wx.empty:
+                merged["weather"].append(wx)
+
         if max_workers <= 1:
             for venue_code, race_no in finished:
                 try:
@@ -1008,21 +1040,39 @@ class BoatRaceScraper(BaseScraper):
                     _take(venue_code, race_no, rr, py)
                 except Exception as e:
                     logger.warning(f"結果取得失敗 {venue_code} R{race_no}: {e}")
+                if with_before_info:
+                    try:
+                        _take_bi(*self.get_before_info_and_weather(
+                            venue_code, race_date, race_no))
+                    except Exception as e:
+                        logger.warning(f"直前情報取得失敗 {venue_code} R{race_no}: {e}")
         else:
             from concurrent.futures import ThreadPoolExecutor, as_completed
             config = self._config
 
-            def _worker(venue_code: str, race_no: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+            def _worker(venue_code: str, race_no: int) -> tuple:
                 with BoatRaceScraper(config) as s:
-                    return s.get_race_result_and_payouts(venue_code, race_date, race_no)
+                    rr, py = s.get_race_result_and_payouts(venue_code, race_date, race_no)
+                    bi = wx = None
+                    if with_before_info:
+                        # 直前情報で落ちても結果は返す。片方の失敗で
+                        # もう片方まで捨てると、判定そのものが止まる。
+                        try:
+                            bi, wx = s.get_before_info_and_weather(
+                                venue_code, race_date, race_no)
+                        except Exception as e:
+                            logger.warning(
+                                f"直前情報取得失敗 {venue_code} R{race_no}: {e}")
+                    return rr, py, bi, wx
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(_worker, vc, rn): (vc, rn) for vc, rn in finished}
                 for future in as_completed(futures):
                     vc, rn = futures[future]
                     try:
-                        rr, py = future.result()
+                        rr, py, bi, wx = future.result()
                         _take(vc, rn, rr, py)
+                        _take_bi(bi, wx)
                     except Exception as e:
                         logger.warning(f"結果取得失敗 {vc} R{rn}: {e}")
 
