@@ -140,14 +140,19 @@ function betTypeLabel(t) {
 // 2026-08-30、17,090レース・独立2窓で測った「モデルの確率が最大の1点」の成績。
 // 表示は保守側（悪い方の窓）を出す。⚠️ どれも100%未満なので、
 // 買えば平均して減る。数字を出さずに「買い目」とだけ書くと誤解を招く。
+// ⚠️ buy は configs/config.yaml の betting.bet_types と一致していること。
+// リテラルのまま書く（tests/test_buy_config.py が正規表現で読んで見張る）。
+// 2026-09-03: 固い4賭式を実運用に。3連複・3連単はモデルが確立するまでペーパー。
 const BET_TIER = {
-  fukusho:     { tier: "固い", roi: 93.5 },
-  tansho:      { tier: "固い", roi: 90.8 },
-  kakurenfuku: { tier: "固い", roi: 84.8 },
-  nirenfuku:   { tier: "勝負", roi: 82.4 },
-  sanrenfuku:  { tier: "勝負", roi: 80.1 },
-  sanrentan:   { tier: "夢",   roi: 79.4 },
+  fukusho:     { tier: "固い", roi: 93.5, buy: true },
+  tansho:      { tier: "固い", roi: 90.8, buy: true },
+  kakurenfuku: { tier: "固い", roi: 84.8, buy: true },
+  nirenfuku:   { tier: "勝負", roi: 82.4, buy: true },
+  sanrenfuku:  { tier: "勝負", roi: 80.1, buy: false },
+  sanrentan:   { tier: "夢",   roi: 79.4, buy: false },
 };
+const BET_ORDER = ["fukusho", "tansho", "kakurenfuku",
+                   "nirenfuku", "sanrenfuku", "sanrentan"];
 // ── 「買うべき」の絞り込み ──
 //
 // 画面は 144レース × 6賭式 = 812件の総当たりを出していた。推奨ではなく一覧で、
@@ -217,38 +222,54 @@ const CONFIDENCE = {
   sanrenfuku:  { cuts: [0.227, 0.285, 0.354], hit: [0.152, 0.215, 0.264, 0.349] },
   sanrentan:   { cuts: [0.061, 0.086, 0.117], hit: [0.038, 0.082, 0.104, 0.153] },
 };
-// ⚠️ 段階は**的中率そのもの**で切る。四分位で切ってはいけない。
-// 2026-08-31 に最初そうしたところ、上位25%を機械的にSと呼ぶので
-// **常に全体の25%がS**になり、「S」が何も選んでいなかった（243件）。
-// 的中率で切れば賭式をまたいで同じ意味になる:「S＝7割以上当たる」。
-// 3連単はどの帯でもSにならない（最上位でも15%）が、それが事実。
-const GRADE_BY_HIT = [
-  { g: "S", min: 0.70, label: "7割以上あたる" },
-  { g: "A", min: 0.50, label: "半分以上あたる" },
-  { g: "B", min: 0.30, label: "3割以上あたる" },
-  { g: "C", min: 0.00, label: "3割未満" },
-];
+// ⚠️⚠️ 段階は**その賭式の中での帯**。賭式をまたぐ絶対基準にしてはいけない。
+//
+// 2026-08-31〜09-03 まで「的中率70%以上ならS」という絶対基準だった。
+// 各賭式の的中率の上限はこうなっている:
+//
+//     複勝 88.9% / 単勝 75.9% / 拡連複 67.7% /
+//     2連複 43.0% / 3連複 34.9% / 3連単 15.3%
+//
+// つまり **拡連複・3連複・3連単は永久にSにならず、既定の一覧から丸ごと
+// 消えていた**（9/3 実測: 971件中180件しか出ておらず、その内訳は
+// 複勝113 + 単勝35 + 買った2連複32。他3賭式は0件）。
+// 上限15%〜89%の賭式に同じ物差しを当てれば当然そうなる。
+//
+// 段階の意味を「その賭式の中で上位か」に変えれば、どの賭式にもSが出る。
+// 「3連単のSは的中15%」という事実は **hit を絶対値で併記して**伝える。
+// ⚠️ hit の併記は「S＝勝てる」と読ませない唯一の歯止め。外さないこと。
+//
+// （なお四分位で切ること自体は 2026-08-31 に一度やって戻した経緯がある。
+//  当時の問題は「常に全体の25%がSで何も選んでいない」ことだったが、
+//  それは**1本のリストに全賭式を混ぜていたから**で、賭式ごとに
+//  見出しを分けて出すいまの形なら「その賭式の上位25%」で意味が通る。）
+const GRADE_BY_BAND = ["C", "B", "A", "S"];
 
-// その買い目の確度。段階と、その帯の**実測**的中率を返す。
+// その買い目の確度。段階（賭式内の帯）と、その帯の**実測**的中率を返す。
 function confidenceOf(bet) {
   const c = bet && CONFIDENCE[bet.bet_type];
   if (!c) return null;
   const p = bet.model_prob || 0;
   let i = 0;
   while (i < c.cuts.length && p >= c.cuts[i]) i++;
-  const hit = c.hit[i];
-  const gr = GRADE_BY_HIT.find(x => hit >= x.min) || GRADE_BY_HIT[3];
-  return { grade: gr.g, label: gr.label, band: i, hit };
+  const band = ["下位25%", "中位", "上位25%", "最上位25%"][i];
+  return {
+    grade: GRADE_BY_BAND[i],
+    band: i,
+    top: i === c.cuts.length,          // その賭式の最上位帯か
+    hit: c.hit[i],
+    label: `${betTypeLabel(bet.bet_type)}の中で${band}`,
+  };
 }
 
-// 既定の一覧に出すか＝確度が最上位(S)か。
+// 既定の一覧に出すか＝その賭式の最上位帯か。
 // ⚠️ 実際に賭け金が付いている買い目は、確度に関係なく必ず出す。
 // 絞り込みで自分が買った買い目が消えるのが一番まずい。
 function isRecommended(bet) {
   if (!bet) return false;
   if (isPurchased(bet)) return true;
   const c = confidenceOf(bet);
-  return !!c && c.hit >= 0.70;      // S = 実測で7割以上あたる帯
+  return !!c && c.top;               // S = その賭式の最上位帯
 }
 
 function tierBadge(t) {
@@ -260,12 +281,16 @@ function tierBadge(t) {
 
 // 確度の印。**実測の的中率をそのまま出す**のが肝心で、段階の記号だけだと
 // 「S=勝てる」と読まれてしまう。的中率は未使用データで測った値。
+// ⚠️ 段階は**その賭式の中での順位**。3連単のSと複勝のSは的中率が
+// 15%と89%で全然違う。だから記号の隣に必ず実測値を出す。
 function confBadge(bet) {
   const c = confidenceOf(bet);
   if (!c) return "";
   return `<span class="conf conf--${c.grade}" title="確度 ${c.grade}（${c.label}）：`
-       + `この確率帯の実測的中率（未使用データ10,809レース・誤差±1〜2pt）。`
-       + `⚠️ 当たりやすいぶん配当は低く、回収率は100%未満です">`
+       + `この帯の実測的中率（未使用データ10,809レース・誤差±1〜2pt）。`
+       + `⚠️ 段階は賭式の中での順位です。賭式をまたぐと意味が違います`
+       + `（3連単のSは的中15%、複勝のSは89%）。`
+       + `当たりやすいぶん配当は低く、回収率はどれも100%未満です">`
        + `${c.grade} <b>的中${(c.hit * 100).toFixed(0)}%</b></span>`;
 }
 
@@ -778,7 +803,7 @@ function renderBets() {
   viewRow.className = "view-toggle";
   viewRow.innerHTML = `
     <button class="view-btn${state.betsView === "buy" ? " active" : ""}" data-view="buy">
-      確度S <span class="view-btn__n">${nBuy}</span></button>
+      各賭式の上位 <span class="view-btn__n">${nBuy}</span></button>
     <button class="view-btn${state.betsView === "all" ? " active" : ""}" data-view="all">
       すべて <span class="view-btn__n">${all.length}</span></button>`;
   filterArea.appendChild(viewRow);
@@ -788,15 +813,49 @@ function renderBets() {
   const note = document.createElement("div");
   note.className = "buy-note";
   note.innerHTML = state.betsView === "buy"
-    ? `<b>S＝実測で7割以上あたる</b>買い目だけ。届くのは複勝と単勝だけで、`
-      + `3連単はどの帯でもSになりません（最上位でも15%）。`
+    ? `<b>賭式ごとの最上位帯（S）だけ</b>を出しています。`
+      + `段階は<b>その賭式の中での順位</b>なので、`
+      + `同じSでも複勝は的中89%、3連単は15%です。`
       + `的中率は未使用データ10,809レースの実測（誤差±1〜2pt）。`
-      + `<strong>⚠️ 当たりやすいぶん配当は低く、回収率は93〜96%で`
-      + `100%未満です。</strong>`
-    : `全賭式・全レースの総当たり。<b>S</b>=7割以上 / <b>A</b>=半分以上 / `
-      + `<b>B</b>=3割以上 / <b>C</b>=3割未満 あたる帯です`
-      + `（未使用データ10,809レースの実測）。`;
+      + `<strong>⚠️ 最上位帯でも回収率は 87〜97% で、どれも100%未満です。`
+      + `買えば平均して減ります。</strong>`
+    : `全賭式・全レースの総当たり。<b>S</b>=最上位25% / <b>A</b>=上位25% / `
+      + `<b>B</b>=中位 / <b>C</b>=下位25%（<b>その賭式の中での順位</b>）。`
+      + `的中率は未使用データ10,809レースの実測。`;
   filterArea.appendChild(note);
+
+  // ── 賭式ごとの内訳 ──
+  // ⚠️ これを出す理由: 2026-09-03 まで、既定の一覧に拡連複・3連複・3連単が
+  // **1件も出ていなかった**（絶対基準 的中率>=0.70 に永久に届かないため）。
+  // 賭式が丸ごと消えていても、1本のリストを眺めているだけでは気づけない。
+  // 各賭式が今日**何件あるか**を常に見えるようにして、0件なら0と表示する。
+  const typeRow = document.createElement("div");
+  typeRow.className = "type-summary";
+  typeRow.innerHTML = BET_ORDER.map(bt => {
+    const v = BET_TIER[bt] || {};
+    const n = bets.filter(b => b.bet_type === bt).length;
+    const c = CONFIDENCE[bt];
+    const topHit = c ? c.hit[c.hit.length - 1] : null;
+    const on = f.betType === betTypeLabel(bt);
+    return `<button class="type-chip${on ? " active" : ""}${n ? "" : " type-chip--zero"}"
+        data-bet-type="${betTypeLabel(bt)}"
+        title="${v.tier}層・未見17,090レースでの実測回収率 ${v.roi}%。`
+      + `${v.buy ? "実運用（賭け金を付ける）" : "ペーパー（記録のみ）"}。`
+      + `最上位帯の実測的中率 ${topHit != null ? (topHit * 100).toFixed(0) + "%" : "―"}">
+      <span class="type-chip__name">${betTypeLabel(bt)}</span>
+      <span class="type-chip__n">${n}</span>
+      <span class="type-chip__meta">${v.roi ? v.roi.toFixed(0) + "%" : ""}${
+        v.buy ? "" : " ペーパー"}</span>
+    </button>`;
+  }).join("");
+  filterArea.appendChild(typeRow);
+  typeRow.querySelectorAll(".type-chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const t = btn.dataset.betType;
+      state.filters.bets.betType = (f.betType === t) ? null : t;
+      renderBets();
+    });
+  });
 
   // EV説明トグル
   const infoRow = document.createElement("div");
@@ -1035,12 +1094,27 @@ function buildBetCard(b) {
         <span class="bet-card__stats">
           確率 <b>${((b.model_prob||0)*100).toFixed(1)}%</b>
           <span class="dot-sep">·</span>
-          オッズ <b>${(b.odds||0).toFixed(1)}x</b>${oddsMark(b.odds)}
+          オッズ <b>${oddsText(b)}</b>${oddsMark(b.odds)}
         </span>
         ${hitLabel}
       </div>
       ${orderHtml ? `<div class="bet-card__result">${orderHtml}</div>` : ""}
     </div>`;
+}
+
+// 複勝と拡連複の板は `1.0-1.3` の**範囲**で出る。「誰と一緒に2着(3着)以内に
+// 入るか」で配当が変わるため、買う時点では1つに決まらない。
+// ⚠️ 2026-09-03 まで下限だけを `オッズ 1.0x` と表示していた。実際には
+// 1.6倍返ってくることがあり、画面が嘘をついているように見えていた。
+// 実測（8/31-9/3 の当たり369本）: 下限1.0 の実払戻は 1.00〜17.90倍、
+// 元返しだったのは60.4%。**下限は元返しの予告ではない。**
+function oddsText(b) {
+  const lo = b.odds || 0;
+  const hi = b.odds_upper;
+  if (hi != null && hi > lo + 0.001) {
+    return `${lo.toFixed(1)}-${hi.toFixed(1)}x`;
+  }
+  return `${lo.toFixed(1)}x`;
 }
 
 // 実測(未見データ2期間)で、オッズが高い帯ほど回収率が良い:

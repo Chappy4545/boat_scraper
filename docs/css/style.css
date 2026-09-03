@@ -1455,6 +1455,27 @@ body {
   padding:.1rem .1rem .4rem;
 }
 
+/* 賭式ごとの内訳。2026-09-03 追加。
+   ⚠️ これが無かったせいで、拡連複・3連複・3連単が既定の一覧から
+   **丸ごと消えていること**に丸4日気づけなかった（絶対基準の的中率>=0.70 に
+   永久に届かないため）。件数を常に見せて、0件なら 0 と出す。 */
+.type-summary{
+  display:flex; gap:.3rem; overflow-x:auto; padding:.1rem 0 .5rem;
+  -webkit-overflow-scrolling:touch;
+}
+.type-chip{
+  flex:1 0 auto; min-width:4.6rem; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; gap:.08rem;
+  padding:.35rem .4rem; border-radius:.45rem;
+  background:var(--surface); border:1px solid var(--surface2);
+  color:var(--text); font-family:inherit; line-height:1.25;
+}
+.type-chip.active{ border-color:var(--accent); background:var(--surface2); }
+.type-chip--zero{ opacity:.45; }
+.type-chip__name{ font-size:.72rem; font-weight:600; white-space:nowrap; }
+.type-chip__n{ font-size:.95rem; font-weight:700; }
+.type-chip__meta{ font-size:.6rem; color:var(--muted); white-space:nowrap; }
+
 /* 表示EVの隣に出す「実質EV」。買う時点のオッズは締切までに縮むので、
    EV はそのぶん過大。実測で割り戻した値を必ず併記する。2026-08-31 追加。 */
 .ev-real{

@@ -1309,6 +1309,16 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
             (row["bet_type"], row["combination"]): row["odds"]
             for _, row in odds_all.iterrows()
         }
+        # 複勝・拡連複の板は `1.0-1.3` の範囲。odds は下限なので、上限も持って
+        # 画面に範囲のまま出す。単一値の賭式には odds_upper が無いので入らない。
+        # ⚠️ 2026-09-03 まで下限しか出しておらず、画面が「オッズ1.0倍」と
+        # 表示したまま実際は1.6倍返ってくることがあった（誤解の原因）。
+        odds_hi_lookup = {}
+        if "odds_upper" in odds_all.columns:
+            for _, row in odds_all.iterrows():
+                up = row.get("odds_upper")
+                if up is not None and up == up:
+                    odds_hi_lookup[(row["bet_type"], row["combination"])] = float(up)
 
         # 市場の含意確率。賭式ごとに 1/オッズ を正規化して控除率を取り除く。
         # 1通りでも欠けると正規化できないので、揃っている賭式だけ作る。
@@ -1382,6 +1392,8 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     "combination": combo["combination"],
                     "model_prob": round(mp, 4),
                     "odds": odds_val,
+                    # 範囲表記（複勝・拡連複）の上限。他の賭式では入らない。
+                    "odds_upper": odds_hi_lookup.get(key),
                     "expected_value": round(mp * odds_val, 4),
                 }
 

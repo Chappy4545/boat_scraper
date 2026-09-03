@@ -177,6 +177,16 @@ def run(d: str, shot: str | None) -> int:
                   f"{buy['paid'] - buy['paidShown']}本")
     if exp["n_displayable"] >= 100 and buy["n"] == 0:
         ng.append("「買うべき」が0件（画面が空になる）")
+    # ⚠️⚠️ 既定ビューに**すべての賭式**が出ること。
+    # 2026-09-03 まで、ここを「0件でないこと」しか見ておらず、
+    # 拡連複・3連複・3連単が既定ビューから**丸ごと消えたまま4日間通っていた**。
+    # 原因は絶対基準（的中率>=0.70）で、各賭式の上限が
+    # 複勝89% 単勝76% 拡連複68% 2連複43% 3連複35% 3連単15% なので
+    # 下4つは永久に届かない。「すべて」ビューでは出ていたので件数照合も通った。
+    if got["types"] and buy["types"] != want_types:
+        missing = [t for t in want_types if t not in buy["types"]]
+        ng.append(f"既定ビューに出ない賭式 {missing}"
+                  f"（既定 {buy['types']} / 出るはず {want_types}）")
     for e in errors:
         ng.append(e)
 
