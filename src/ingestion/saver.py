@@ -88,10 +88,19 @@ def _safe_int(v, default=0) -> int:
 # ──────────────────────────────────────────────
 
 def save_racelist(df: pd.DataFrame) -> int:
-    """出走表 → race_entries"""
+    """出走表 → race_entries
+
+    ⚠️ 同一実行内の重複を自前で弾くこと（`save_payouts` と同じ罠）。
+    セッションは autoflush=False なので、直前に add した行は下の
+    existing クエリに引っかからない。同じ鍵が2回来ると2行 add され、
+    **セッションを抜けるとき**に UNIQUE 制約で落ちる。行ごとの except では
+    捕まらず、**そのバッチが丸ごと失われる**。
+    2026-08-30 に払戻で、2026-09-03 に直前情報で実際に起きた。
+    """
     if df is None or df.empty:
         return 0
     count = 0
+    seen: set = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -115,6 +124,10 @@ def save_racelist(df: pd.DataFrame) -> int:
                 if row.get("closing_time"):
                     race.closing_time = str(row["closing_time"])[:5]
 
+                key = (race.id, _safe_int(row["boat_no"]))
+                if key in seen:
+                    continue
+                seen.add(key)
                 entry = session.query(RaceEntry).filter_by(
                     race_id=race.id, boat_no=_safe_int(row["boat_no"])
                 ).first()
@@ -152,10 +165,25 @@ def save_racelist(df: pd.DataFrame) -> int:
 
 
 def save_before_info(df: pd.DataFrame) -> int:
-    """直前情報 → before_info"""
+    """直前情報 → before_info
+
+    ⚠️ 同一実行内の重複を自前で弾くこと。`save_payouts` と**まったく同じ罠**。
+    セッションは autoflush=False なので、直前に session.add したものは
+    下の existing クエリに引っかからない。同じ (レース, 艇) が2回来ると
+    2行 add され、**コミット時に UNIQUE 制約で落ちる**。
+
+    落ちるのはループの外（セッションを抜けるとき）なので、行ごとの except では
+    捕まらず、**そのバッチが丸ごと失われる**。
+
+    2026-09-03 のバックフィルで実際に起きた: 8月分が 37% から一歩も進まず、
+    ログに `UNIQUE constraint failed: before_info.race_id, before_info.boat_no`。
+    8月に払戻で同じ問題を直したのに、**こちらの saver には入れていなかった**。
+    → [[project_update_reliability]]（静かに全滅する形の一覧）
+    """
     if df is None or df.empty:
         return 0
     count = 0
+    seen: set[tuple] = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -163,6 +191,10 @@ def save_before_info(df: pd.DataFrame) -> int:
                 race = _get_or_create_race(
                     session, stadium, row["race_date"], _safe_int(row["race_no"])
                 )
+                key = (race.id, _safe_int(row["boat_no"]))
+                if key in seen:
+                    continue          # 同一実行内の重複。コミット時に落ちる
+                seen.add(key)
                 bi = session.query(BeforeInfo).filter_by(
                     race_id=race.id, boat_no=_safe_int(row["boat_no"])
                 ).first()
@@ -186,10 +218,19 @@ def save_before_info(df: pd.DataFrame) -> int:
 
 
 def save_weather(df: pd.DataFrame) -> int:
-    """気象情報 → weather"""
+    """気象情報 → weather
+
+    ⚠️ 同一実行内の重複を自前で弾くこと（`save_payouts` と同じ罠）。
+    セッションは autoflush=False なので、直前に add した行は下の
+    existing クエリに引っかからない。同じ鍵が2回来ると2行 add され、
+    **セッションを抜けるとき**に UNIQUE 制約で落ちる。行ごとの except では
+    捕まらず、**そのバッチが丸ごと失われる**。
+    2026-08-30 に払戻で、2026-09-03 に直前情報で実際に起きた。
+    """
     if df is None or df.empty:
         return 0
     count = 0
+    seen: set = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -197,6 +238,9 @@ def save_weather(df: pd.DataFrame) -> int:
                 race = _get_or_create_race(
                     session, stadium, row["race_date"], _safe_int(row["race_no"])
                 )
+                if race.id in seen:
+                    continue
+                seen.add(race.id)
                 wt = session.query(Weather).filter_by(race_id=race.id).first()
                 if not wt:
                     wt = Weather(race_id=race.id)
@@ -243,6 +287,7 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
     from datetime import date as _date
     today = _date.today()
     count = 0
+    seen: set = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -262,6 +307,10 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
                 # None なら行ごとに振り分ける（当日=板 / 後日=確定）
                 row_final = (not is_live) if is_final is None else is_final
 
+                key = (race.id, bet_type, combo, row_final)
+                if key in seen:
+                    continue
+                seen.add(key)
                 existing = session.query(Odds).filter_by(
                     race_id=race.id,
                     bet_type=bet_type,
@@ -295,10 +344,23 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
 
 
 def save_race_result(df: pd.DataFrame) -> int:
-    """着順 → race_results"""
+    """着順 → race_results
+
+    ⚠️ 同一実行内の重複を自前で弾くこと（`save_payouts` と同じ罠）。
+    セッションは autoflush=False なので、直前に add した行は下の
+    existing クエリに引っかからない。同じ鍵が2回来ると2行 add され、
+    **セッションを抜けるとき**に UNIQUE 制約で落ちる。行ごとの except では
+    捕まらず、**そのバッチが丸ごと失われる**。
+    2026-08-30 に払戻で、2026-09-03 に直前情報で実際に起きた。
+
+    ⚠️ 鍵は (race_id, arrival_order)。**同着**があると同じ着順が2艇に付く。
+    その場合は後の1艇を捨てることになるが、UNIQUE 制約がそうなっている以上
+    落ちるよりはよい（落ちるとその日の着順が丸ごと入らない）。
+    """
     if df is None or df.empty:
         return 0
     count = 0
+    seen: set = set()
     with get_session() as session:
         for _, row in df.iterrows():
             try:
@@ -306,6 +368,10 @@ def save_race_result(df: pd.DataFrame) -> int:
                 race = _get_or_create_race(
                     session, stadium, row["race_date"], _safe_int(row["race_no"])
                 )
+                key = (race.id, _safe_int(row["arrival_order"]))
+                if key in seen:
+                    continue
+                seen.add(key)
                 rr = session.query(RaceResult).filter_by(
                     race_id=race.id,
                     arrival_order=_safe_int(row["arrival_order"])
