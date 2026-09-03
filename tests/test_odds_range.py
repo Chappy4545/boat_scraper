@@ -323,6 +323,58 @@ class TestPersistUpper:
                 "SELECT odds, odds_upper FROM odds WHERE bet_type='fukusho'")).one()
         assert (row[0], row[1]) == (2.5, 3.7)
 
+    def test_範囲でない賭式の上限はNoneになる(self, tmp_path):
+        """⚠️ `_safe_float` は既定値 0.0 を返す。それを使うと単勝や3連単に
+        「上限0倍」が入り、EV を出すときに黙って壊れる。実際 2026-09-03 に
+        一度そう書いてしまい、実データを流して 72/72件 に 0.0 が入って気づいた。
+        """
+        import pandas as pd
+        from sqlalchemy import text
+
+        import src.ingestion.database as db
+        from src.ingestion.saver import save_odds
+        from src.utils.helpers import load_config
+
+        cfg = load_config()
+        db.init_db({**cfg, "database": {**cfg["database"],
+                                        "url": f"sqlite:///{tmp_path/'t.db'}"}})
+        save_odds(pd.DataFrame([
+            {"stadium_code": "02", "race_date": date(2026, 9, 3), "race_no": 1,
+             "bet_type": "tansho", "combination": "1", "odds": 4.2},
+        ]), is_final=False, force_live=True)
+        with db.get_engine().connect() as c:
+            up = c.execute(text(
+                "SELECT odds_upper FROM odds WHERE bet_type='tansho'")).scalar()
+        assert up is None, f"範囲でない賭式に上限 {up} が入った"
+
+    def test_NaNの上限もNoneになる(self, tmp_path):
+        """pandas は列を揃えるときに NaN を入れる。float(NaN) は通ってしまう。"""
+        import pandas as pd
+        from sqlalchemy import text
+
+        import src.ingestion.database as db
+        from src.ingestion.saver import save_odds
+        from src.utils.helpers import load_config
+
+        cfg = load_config()
+        db.init_db({**cfg, "database": {**cfg["database"],
+                                        "url": f"sqlite:///{tmp_path/'t2.db'}"}})
+        df = pd.concat([
+            pd.DataFrame([{"stadium_code": "02", "race_date": date(2026, 9, 3),
+                           "race_no": 1, "bet_type": "tansho", "combination": "1",
+                           "odds": 4.2}]),
+            pd.DataFrame([{"stadium_code": "02", "race_date": date(2026, 9, 3),
+                           "race_no": 1, "bet_type": "fukusho", "combination": "1",
+                           "odds": 2.5, "odds_upper": 3.7}]),
+        ], ignore_index=True)
+        assert df["odds_upper"].isna().any(), "前提: NaN が入っている"
+        save_odds(df, is_final=False, force_live=True)
+        with db.get_engine().connect() as c:
+            rows = dict(c.execute(text(
+                "SELECT bet_type, odds_upper FROM odds")).all())
+        assert rows["tansho"] is None, f"NaN が {rows['tansho']} として入った"
+        assert rows["fukusho"] == 3.7
+
     def test_本番DBに列がある(self):
         from sqlalchemy import inspect as sa_inspect
 

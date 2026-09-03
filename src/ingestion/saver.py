@@ -60,6 +60,22 @@ def _safe_float(v, default=0.0) -> float:
         return default
 
 
+def _opt_float(v) -> float | None:
+    """値が無ければ None を返す（`_safe_float` は 0.0 を返すので使えない）。
+
+    「無い」と「0」を区別したい列で使う。odds_upper は範囲表記の賭式
+    （複勝・拡連複）にしか存在せず、他は None が正しい。0.0 を入れると
+    「上限0倍」という嘘の値になり、EV を出すときに黙って壊れる。
+    pandas から来る NaN も None にする（自己不一致で判定）。
+    """
+    if v is None or v != v:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
 def _safe_int(v, default=0) -> int:
     try:
         return int(v) if v is not None else default
@@ -257,8 +273,10 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
                     if existing.is_live and not is_live:
                         continue
                     existing.odds = _safe_float(row.get("odds"))
-                    # 範囲表記（複勝・拡連複）の上限。無い賭式では None。
-                    existing.odds_upper = _safe_float(row.get("odds_upper"))
+                    # 範囲表記（複勝・拡連複）の上限。範囲でない賭式では None。
+                    # ⚠️ _safe_float は既定値 0.0 を返すので使えない。
+                    # 0.0 を入れると「上限0倍」という嘘になる。
+                    existing.odds_upper = _opt_float(row.get("odds_upper"))
                     existing.is_live = bool(existing.is_live or is_live)
                 else:
                     session.add(Odds(
@@ -266,7 +284,7 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
                         bet_type=bet_type,
                         combination=combo,
                         odds=_safe_float(row.get("odds")),
-                        odds_upper=_safe_float(row.get("odds_upper")),
+                        odds_upper=_opt_float(row.get("odds_upper")),
                         is_final=row_final,
                         is_live=is_live,
                     ))
