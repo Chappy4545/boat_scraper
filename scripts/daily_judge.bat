@@ -62,6 +62,21 @@ if errorlevel 1 (
     set "RC=1"
     echo [%date% %time%] collect_results failed >> "%LOG%"
 )
+REM Pull AGAIN, right before judge reads the board. The pull above happens
+REM before ingest_odds + collect_results, which together take about 9 minutes
+REM -- and the cloud rewrites bets_<date>.json every 15 minutes, so it can
+REM land inside that gap.
+REM 2026-09-02 measured: pulled 16:45, cloud finalised Suminoe 5R and Fukuoka
+REM 11R at 16:49, judge read the 16:45 copy at 16:54 and exported over it.
+REM 12 final picks were dropped. is_final_pick is now write-once in
+REM _sync_bets_from_json as well; this narrows the window to seconds.
+git fetch origin master >> "%LOG%" 2>&1
+git -c rebase.autoStash=true rebase -X theirs origin/master >> "%LOG%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] pre-judge rebase failed - judging local copy >> "%LOG%"
+    git rebase --abort >> "%LOG%" 2>&1
+)
+
 "%PY%" main.py judge %RUNDATE% >> "%LOG%" 2>&1
 if errorlevel 1 (
     set "RC=1"

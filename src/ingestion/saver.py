@@ -257,6 +257,8 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
                     if existing.is_live and not is_live:
                         continue
                     existing.odds = _safe_float(row.get("odds"))
+                    # 範囲表記（複勝・拡連複）の上限。無い賭式では None。
+                    existing.odds_upper = _safe_float(row.get("odds_upper"))
                     existing.is_live = bool(existing.is_live or is_live)
                 else:
                     session.add(Odds(
@@ -264,6 +266,7 @@ def save_odds(df: pd.DataFrame, is_final: bool | None = True,
                         bet_type=bet_type,
                         combination=combo,
                         odds=_safe_float(row.get("odds")),
+                        odds_upper=_safe_float(row.get("odds_upper")),
                         is_final=row_final,
                         is_live=is_live,
                     ))
@@ -378,6 +381,9 @@ def save_day(data: dict) -> dict:
     _save("odds_nirentan", save_odds, None)
     _save("odds_nirenfuku", save_odds, None)
     _save("odds_tansho", save_odds, None)
+    # 2026-09-03 追加。それまで複勝の板は odds に0件で、毎日捨てていた。
+    # 単勝と同じページなので通信は増えない。
+    _save("odds_fukusho", save_odds, None)
     _save("race_result", save_race_result)
     _save("payouts", save_payouts)
 

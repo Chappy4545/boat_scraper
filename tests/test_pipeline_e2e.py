@@ -42,7 +42,11 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-D = date(2026, 9, 1)
+# ⚠️ 固定日にしてはいけない。買い目の生成は「締切を過ぎたレースには賭け金を
+# 付けない」ので、日付を固定すると**その日を過ぎた瞬間に全テストが 0 件になる**。
+# 実際 2026-08-31 に書いた `date(2026, 9, 1)` は 9/2 から 8 本落ち始めた
+# （締切 11:30 / 12:30 が常に過去になるため）。翌日を使えば常に締切前。
+D = date.today() + timedelta(days=1)
 STADIUM = ("01", "桐生")
 RACES = (1, 2)          # 2レースで十分（経路を通すのが目的）
 
@@ -682,6 +686,48 @@ def test_夜の判定でJSONの買い目がDBに入る(day):
                    .filter(Race.race_date == D,
                            Bet.pass_reason == "日中に条件を外れた").count())
         assert dropped == 0,             f"JSON に載っている買い目が {dropped}件「条件を外れた」にされた（突き合わせ失敗）"
+
+
+def test_古いJSONを取り込んでも確定フラグを消さない(day):
+    """⚠️ 2026-09-02 に確定12本が消えた（住之江5R・福岡11R の全6賭式）。
+
+    ローカルは judge の前に pull するが、その後 ingest_odds と
+    collect_results で約9分かかる。クラウドは15分ごとに書くので、
+    **その隙間に確定させた分**を持たない JSON を読むことがある:
+
+        16:45 ローカルが pull（住之江5R はまだ未確定）
+        16:49 クラウドが確定させて commit   ← pull より後
+        16:54 ローカルの judge が 16:45 の版を読んで export → 確定が消えた
+
+    取り込む JSON が古いこと自体は避けきれない。だから確定フラグを
+    **false→true の一方通行**にして、古い版を読んでも壊れないようにする。
+    """
+    import main
+    from src.ingestion.database import get_session
+    from src.ingestion.models import Bet, Race
+    main.cmd_predict(D)
+    main.cmd_refresh_odds(D, max_workers=1)
+    _mark_final(day)
+    main.cmd_judge(D)
+
+    with get_session() as s:
+        n_before = (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                    .filter(Race.race_date == D, Bet.is_final_pick.is_(True)).count())
+    assert n_before > 0, "前提: 確定した買い目がDBにある"
+
+    # クラウドが確定させる前の「古い版」を読ませる
+    p = day / "docs" / "data" / f"bets_{D}.json"
+    rows = json.loads(p.read_text(encoding="utf-8"))
+    stale = [{**b, "is_final_pick": (i == 0)} for i, b in enumerate(rows)]
+    p.write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+
+    main.cmd_judge(D)
+
+    with get_session() as s:
+        n_after = (s.query(Bet).join(Race, Bet.race_id == Race.id)
+                   .filter(Race.race_date == D, Bet.is_final_pick.is_(True)).count())
+    assert n_after >= n_before, (
+        f"古い JSON を読んで確定フラグが {n_before}→{n_after} に減った")
 
 
 def test_夜の判定で記録用の賭式が損益に入らない(day):

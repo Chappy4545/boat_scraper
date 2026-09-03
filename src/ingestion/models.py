@@ -164,10 +164,22 @@ class Odds(Base):
 
     id = Column(Integer, primary_key=True)
     race_id = Column(Integer, ForeignKey("races.id"), nullable=False)
-    # bet_type: tansho/nirentan/nirenfuku/sanrentan/sanrenfuku
+    # bet_type: tansho/fukusho/nirentan/nirenfuku/kakurenfuku/sanrentan/sanrenfuku
     bet_type = Column(String(20), nullable=False)
     combination = Column(String(20), nullable=False)    # "1-2-3" 形式
     odds = Column(Float)
+    # 複勝と拡連複は「誰と一緒に入るか」で配当が変わるので、板は `1.0-1.2` の
+    # ような**範囲**で出る。odds に下限、odds_upper に上限を入れる。
+    # 範囲でない賭式では None。
+    #
+    # 2026-09-03: それまで下限しか保存しておらず、上限は毎日捨てていた。
+    # オッズは遡って取れないので、捨てた分は永久に戻らない
+    # （[[project_odds_are_perishable]]）。実測では拡連複の当たり269本のうち
+    # 55.0% が下限より高く払っており、下限だけでは EV が系統的に低く出る。
+    #
+    # ⚠️ 上限があっても「元返しかどうか」は買う時点では決まらない。
+    # 相方の艇で決まるため。範囲の幅は情報であって予告ではない。
+    odds_upper = Column(Float)
     is_final = Column(Boolean, default=False)           # 確定オッズか
     # レース当日に取得した値か（= 買う時点で実際に見られた値か）。
     # 2026-08-11: 全レコードが is_final=1 で区別できず、レース後に遡及取得した

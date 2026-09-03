@@ -106,6 +106,39 @@ def _workers_arg(args: list[str], default: int = 5) -> int:
     return default
 
 
+def _archive_odds_rows(data: dict) -> list[dict]:
+    """収集結果のうちオッズだけを、退避JSON用の行に落とす。
+
+    ⚠️ ここで落とした列は**永久に戻らない**。オッズは過去日に遡って取得できず、
+    使い捨てDBはこの実行が終われば消えるため（[[project_odds_are_perishable]]）。
+
+    複勝・拡連複は `1.0-1.2` の範囲表記で、下限が `odds`・上限が `odds_upper`。
+    2026-09-03 まで上限を運んでおらず、毎日捨てていた。
+    範囲でない賭式には `odds_upper` が無いので、その場合だけ省く。
+    """
+    rows: list[dict] = []
+    for key, df in data.items():
+        if not key.startswith("odds_") or df is None or getattr(df, "empty", True):
+            continue
+        for _, r in df.iterrows():
+            try:
+                row = {
+                    "stadium_code": str(r["stadium_code"]),
+                    "race_no": int(r["race_no"]),
+                    "bet_type": str(r["bet_type"]),
+                    "combination": str(r["combination"]),
+                    "odds": float(r["odds"]),
+                }
+                # pandas を import していないので、NaN は自己不一致で判定する。
+                up = r.get("odds_upper")
+                if up is not None and up == up:
+                    row["odds_upper"] = float(up)
+                rows.append(row)
+            except Exception:
+                continue
+    return rows
+
+
 def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
     """履歴DBを持たずに当日の予測を作る（GitHub Actions 用）。
 
@@ -193,21 +226,7 @@ def cmd_predict_cloud(target_date: date | None = None, max_workers: int = 5):
     # archive_odds は独立に取り直す作りだが、同じものを2度取る理由はない。
     # ローカルは後で `python main.py ingest_odds <日付>` で履歴DBに入れる。
     import gzip as _gzip
-    rows = []
-    for key, df in data.items():
-        if not key.startswith("odds_") or df is None or df.empty:
-            continue
-        for _, r in df.iterrows():
-            try:
-                rows.append({
-                    "stadium_code": str(r["stadium_code"]),
-                    "race_no": int(r["race_no"]),
-                    "bet_type": str(r["bet_type"]),
-                    "combination": str(r["combination"]),
-                    "odds": float(r["odds"]),
-                })
-            except Exception:
-                continue
+    rows = _archive_odds_rows(data)
     if rows:
         out = Path("docs/data") / f"odds_raw_{d}.json.gz"
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -989,7 +1008,15 @@ def _sync_bets_from_json(d: date) -> None:
             bet.odds = src.get("odds")
             bet.expected_value = src.get("expected_value")
             bet.market_prob = src.get("market_prob", bet.market_prob)
-            bet.is_final_pick = bool(src.get("is_final_pick"))
+            # ⚠️ 確定フラグは **false→true の一方通行**。一度「これを買え」と
+            # 画面に出した事実は、あとから読んだ JSON が古くても取り消さない。
+            # 2026-09-02 に 住之江5R・福岡11R の確定12本が消えた:
+            #   16:45 ローカルが pull（この時点では未確定）
+            #   16:49 クラウドが確定させて commit  ← pull の後
+            #   16:54 ローカルの judge が 16:45 の JSON を読んで export
+            # 取り込む JSON が古いこと自体は避けきれない（クラウドは15分ごとに
+            # 書く）ので、フラグの側を単調にして壊れないようにする。
+            bet.is_final_pick = bool(bet.is_final_pick or src.get("is_final_pick"))
             # JSON に載っていた＝その日に「買え」と表示した証拠。損益の集計は
             # date(created_at) <= race_date で絞るので、作成日もレース日に合わせる。
             # クラウドが買い目を作るようになってから、ローカルには「当日作った
@@ -1849,6 +1876,12 @@ def cmd_archive_odds(target_date: date | None = None, max_workers: int = 3):
 
     出力: docs/data/odds_raw_YYYY-MM-DD.json.gz (gzipで約1/17)
     後で `python main.py ingest_odds DATE` で DB に取り込む。
+
+    ⚠️ ここは**ローカルが落ちた日だけ**動く予備経路（odds_archive.yml が
+    bets_<日付>.json の有無で判断する）。通常日の退避は cmd_cloud_predict が
+    collect_day の結果から書いており、そちらには単勝・複勝も入る。
+    この予備経路は3ページ/レースに絞ってある（55分の制限があるため）。
+    単勝・複勝・拡連複は落ちた日には取れない。増やすなら所要時間を先に測ること。
     """
     import gzip
     import json
@@ -1887,13 +1920,17 @@ def cmd_archive_odds(target_date: date | None = None, max_workers: int = 3):
                         if df is None or df.empty:
                             continue
                         for _, r in df.iterrows():
-                            rows.append({
+                            row = {
                                 "stadium_code": str(r["stadium_code"]),
                                 "race_no": int(r["race_no"]),
                                 "bet_type": str(r["bet_type"]),
                                 "combination": str(r["combination"]),
                                 "odds": float(r["odds"]),
-                            })
+                            }
+                            up = r.get("odds_upper")
+                            if up is not None and up == up:
+                                row["odds_upper"] = float(up)
+                            rows.append(row)
             return rows
 
         all_rows: list[dict] = []

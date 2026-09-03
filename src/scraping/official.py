@@ -58,6 +58,28 @@ BET_TYPE_MAP = {
 }
 
 
+def _parse_odds_range(txt: str) -> tuple[float | None, float | None]:
+    """`1.0-1.2` → (1.0, 1.2)。`2.4` のような単一値 → (2.4, 2.4)。
+
+    複勝と拡連複だけ範囲表記になる。「誰と一緒に入るか」で配当が変わるため。
+    2026-09-03 まで下限しか読んでおらず、上限は捨てていた。オッズは遡って
+    取れないので、捨てた分は永久に戻らない。
+
+    読めない値は (None, None) を返す。呼び出し側はその行を捨てること。
+    """
+    s = str(txt).strip()
+    if not s:
+        return None, None
+    parts = [p.strip() for p in s.split("-") if p.strip()]
+    try:
+        vals = [float(p) for p in parts]
+    except (ValueError, TypeError):
+        return None, None
+    if not vals or vals[0] <= 0:
+        return None, None
+    return vals[0], max(vals)
+
+
 def _jp_int(s: str, default: int = 0) -> int:
     try:
         return int(str(s).translate(_JP_DIGIT).strip())
@@ -720,9 +742,19 @@ class BoatRaceScraper(BaseScraper):
         """複勝: oddstf の table[2]。単勝と同じページなので通信は増えない。
 
         ⚠️ 拡連複と同じくオッズは範囲表記（`1.0-1.1`）。どの艇と一緒に
-        2着以内へ入るかで配当が変わるため。odds 列には**下限（保守側）**を入れる。
+        2着以内へ入るかで配当が変わるため。odds に**下限**、odds_upper に
+        **上限**を入れる（2026-09-03 まで下限しか保存しておらず、上限は
+        毎日捨てていた。オッズは遡って取れないので戻らない）。
+
+        ⚠️ 上限があっても「元返しか否か」は買う時点では確定しない。相方の艇で
+        決まるため。実測（8/31-9/3 の当たり369本）では下限1.0のうち実払戻が
+        元返しだったのは60.4%で、最大17.9倍まで出ている。
         """
         html = self._fetch_raw(self._url("oddstf"), self._params(stadium_code, race_date, race_no))
+        return self._parse_odds_fukusho(html, stadium_code, race_date, race_no)
+
+    def _parse_odds_fukusho(self, html: str, stadium_code: str,
+                            race_date: date, race_no: int) -> pd.DataFrame:
         soup = BeautifulSoup(html, "lxml")
         tables = soup.find_all("table")
         if len(tables) < 3:
@@ -736,11 +768,8 @@ class BoatRaceScraper(BaseScraper):
             odds_txt = tds[2].get_text(strip=True)
             if not boat_txt.isdigit() or not odds_txt:
                 continue
-            try:
-                low = float(odds_txt.split("-")[0])
-            except (ValueError, TypeError):
-                continue
-            if low <= 0:
+            low, high = _parse_odds_range(odds_txt)
+            if low is None:
                 continue
             rows.append({
                 "stadium_code": stadium_code,
@@ -749,6 +778,7 @@ class BoatRaceScraper(BaseScraper):
                 "bet_type": "fukusho",
                 "combination": boat_txt,
                 "odds": low,
+                "odds_upper": high,
             })
         return pd.DataFrame(rows)
 
@@ -768,9 +798,12 @@ class BoatRaceScraper(BaseScraper):
             ['4', '1.5-1.8', '4', '3.2-4.4', ...]  → 1-4, 2-4, 3-4
 
         ⚠️ 拡連複は「どの艇と一緒に3着以内に入るか」で配当が変わるため、
-        オッズが `1.6-1.9` のような**範囲**で出る。odds 列は1つしか無いので
-        **下限（保守側）**を入れる。期待値を出すときは低めに見積もることになる。
-        正確な結果は payouts に入っているので、成績の測定はそちらを使う。
+        オッズが `1.6-1.9` のような**範囲**で出る。odds に下限、odds_upper に
+        上限を入れる。成績の測定は payouts（確定払戻）を使うこと。
+
+        2026-09-03 まで下限しか保存していなかった。実測（8/31-9/3 の当たり
+        269本）では **55.0% が下限より高く払っており**、中央で1.09倍。
+        つまり下限だけで出した EV は系統的に低い。
         """
         soup = BeautifulSoup(html, "lxml")
         tables = soup.find_all("table")
@@ -786,11 +819,8 @@ class BoatRaceScraper(BaseScraper):
                 a, b = k + 1, int(b_txt)
                 if a >= b:
                     continue
-                try:
-                    low = float(o_txt.split("-")[0])
-                except (ValueError, TypeError):
-                    continue
-                if low <= 0:
+                low, high = _parse_odds_range(o_txt)
+                if low is None:
                     continue
                 rows.append({
                     "stadium_code": stadium_code,
@@ -799,6 +829,7 @@ class BoatRaceScraper(BaseScraper):
                     "bet_type": "kakurenfuku",
                     "combination": f"{a}-{b}",
                     "odds": low,
+                    "odds_upper": high,
                 })
         return pd.DataFrame(rows)
 
@@ -1152,7 +1183,7 @@ class BoatRaceScraper(BaseScraper):
             "racelist": [], "before_info": [], "weather": [],
             "odds_sanrentan": [], "odds_sanrenfuku": [],
             "odds_nirentan": [], "odds_nirenfuku": [],
-            "odds_tansho": [],
+            "odds_tansho": [], "odds_fukusho": [],
             "race_result": [], "payouts": [],
         }
         for rno in range(1, 13):
@@ -1183,10 +1214,19 @@ class BoatRaceScraper(BaseScraper):
                     buckets["odds_nirenfuku"].append(self._parse_odds_nirenfuku(html2, *params))
                 except Exception as e:
                     logger.warning(f"2連オッズ取得失敗 {code} R{rno}: {e}")
+                # 単勝と複勝は同じ oddstf ページ。1回取れば両方作れるので
+                # 通信は増えない（_fetch_raw のキャッシュ経由）。
+                # 2026-09-03 まで複勝を作っておらず、複勝の板は毎日
+                # 捨てられていた（odds テーブルに0件）。遡って取れない。
                 try:
-                    buckets["odds_tansho"].append(self.get_odds_tansho(*params))
+                    html_tf = self._fetch_raw(self._url("oddstf"),
+                                              self._params(*params))
+                    buckets["odds_tansho"].append(
+                        self._parse_odds_tansho(html_tf, *params))
+                    buckets["odds_fukusho"].append(
+                        self._parse_odds_fukusho(html_tf, *params))
                 except Exception as e:
-                    logger.warning(f"単勝取得失敗 {code} R{rno}: {e}")
+                    logger.warning(f"単勝/複勝取得失敗 {code} R{rno}: {e}")
             if not skip_results:
                 try:
                     rr, py = self.get_race_result_and_payouts(*params)
@@ -1220,7 +1260,7 @@ class BoatRaceScraper(BaseScraper):
             "racelist": [], "before_info": [], "weather": [],
             "odds_sanrentan": [], "odds_sanrenfuku": [],
             "odds_nirentan": [], "odds_nirenfuku": [],
-            "odds_tansho": [],
+            "odds_tansho": [], "odds_fukusho": [],
             "race_result": [], "payouts": [],
         }
 

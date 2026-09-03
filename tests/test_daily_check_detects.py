@@ -177,8 +177,35 @@ def test_採番が入れ替わっても誤検知しない():
     assert lost_final_picks(revs) == set(), "race_id で見ている（採番違いに弱い）"
 
 
-def test_実データでは確定が消えていない():
-    """08-26〜08-31 の実際の履歴。ここが NG なら本当に記録が壊れている。"""
+def test_消えたままなら警報を出す():
+    """`unrestored_final_picks`: いま欠けているものだけを返す。"""
+    from scripts.daily_check import unrestored_final_picks
+    revs = [
+        [_bet("桐生", 1, "1-2"), _bet("桐生", 2, "1-3")],
+        [_bet("桐生", 1, "1-2")],                       # R2 が消えたまま
+    ]
+    assert unrestored_final_picks(revs) == {("桐生", 2, "nirenfuku", "1-3")}
+
+
+def test_復元されたものは警報から外れる():
+    """⚠️ 時制の区別。直したのに永久に赤いと、赤を無視するようになる。
+
+    2026-09-02 の12本（住之江5R・福岡11R）が実際にこれだった。
+    クラウドが公開していた版から復元したので、いまの記録は無傷。
+    「その日に事故が起きた」事実は `lost_final_picks` が保持する。
+    """
+    from scripts.daily_check import unrestored_final_picks
+    revs = [
+        [_bet("桐生", 1, "1-2"), _bet("桐生", 2, "1-3")],
+        [_bet("桐生", 1, "1-2")],                       # 一度消えて
+        [_bet("桐生", 1, "1-2"), _bet("桐生", 2, "1-3")],  # 戻った
+    ]
+    assert unrestored_final_picks(revs) == set(), "復元済みなのに警報が出る"
+    assert lost_final_picks(revs), "事故が起きた事実まで消してはいけない"
+
+
+def test_実データでは確定が消えたままになっていない():
+    """直近5日の実際の履歴。ここが NG なら**いま**記録が壊れている。"""
     src = ROOT / "docs" / "data"
     days = sorted(p.name[5:15] for p in src.glob("bets_2026-*.json"))[-5:]
     if not days:

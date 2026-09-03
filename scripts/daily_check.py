@@ -157,11 +157,14 @@ def json_integrity_checks(d, data_dir: Path, prev_health: dict | None = None):
     # EV が変わるので入れ替わる）。**確定したものが消えるのは記録の破壊**で、
     # 後から損益が書き換わる。クラウドが15分ごとにコミットしているので、
     # その履歴を遡ればその日の全ての状態を見られる。
+    # ⚠️ 見るのは「いま欠けているか」（unrestored）であって「一度でも消えたか」
+    # ではない。後者は直しても消えないので、テストも通知も永久に赤くなり、
+    # 赤を無視する癖がつく。飛んだ回数は参考として併記する。
     lost_final = _final_picks_lost(d, data_dir)
     if lost_final is not None:
         n_lost, n_rev = lost_final
         checks.append(("確定買い目の保全", n_lost == 0,
-                       f"消えた確定 {n_lost}本 / {n_rev}版"
+                       f"いま欠けている確定 {n_lost}本 / {n_rev}版"
                        + ("　※損益が書き換わります" if n_lost else "")))
 
     # 締切より後に初めて現れた「金額つき」買い目。買えなかったのに
@@ -203,6 +206,23 @@ def lost_final_picks(revisions) -> set[tuple]:
         lost |= (seen - keys)
         seen |= keys
     return lost
+
+
+def unrestored_final_picks(revisions) -> set[tuple]:
+    """一度確定したのに、**いまも**記録から欠けている買い目を返す。
+
+    `lost_final_picks` との違いは時制。あちらは「その日に起きたか」を溜める
+    ので、直しても消えない（毎晩の通知はそれでよい。事故は事故）。
+    こちらは「いま壊れているか」なので、復元すれば消える。
+
+    ⚠️ 使い分けを間違えないこと。両方を「異常」として扱うと、
+    直しようのない過去の事実でテストが永久に赤くなり、赤を無視する癖がつく。
+    2026-09-02 の12本がまさにこれだった（クラウドの版から復元済み）。
+    """
+    if not revisions:
+        return set()
+    latest = {final_pick_key(b) for b in revisions[-1] if b.get("is_final_pick")}
+    return lost_final_picks(revisions) - latest
 
 
 def unbuyable_money_bets(revisions, d) -> list[tuple]:
@@ -316,7 +336,15 @@ def _final_picks_lost(d, data_dir: Path) -> tuple[int, int] | None:
             b = _git("show", f"{sha}:{rel}")
             if b.returncode == 0:
                 out.append(json.loads(b.stdout))
-        return len(lost_final_picks(out)), len(revs)
+        # 作業ツリーの現物を最後に足す。直した直後はまだコミットされて
+        # いないので、これが無いと「復元済み」を復元前と見なしてしまう。
+        cur = data_dir / f"bets_{d}.json"
+        if cur.exists():
+            try:
+                out.append(json.loads(cur.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        return len(unrestored_final_picks(out)), len(revs)
     except Exception:
         return None
 
