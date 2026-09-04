@@ -279,6 +279,16 @@ class Bet(Base):
     is_final_pick = Column(Boolean, default=False)
     is_hit = Column(Boolean)                            # 的中（結果判明後）
     actual_payout = Column(Integer)                     # 実際の払戻
+    # 不成立（全額返還）。勝ちでも負けでもないので is_hit は None のまま。
+    #
+    # ⚠️ 2026-09-04 びわこ9R: フライング多発で2艇しか完走せず、7賭式中5つが
+    # 「不成立 ¥100」だった。当たり組番が存在しないので judge は永久に
+    # is_hit を埋められず、画面の「買い目確定」欄に残り続けた。
+    # 集計は is_hit が None のものを除くので**数字は正しかった**（返還なので
+    # 除外が正しい）が、表示だけが止まっていた。
+    #
+    # 的中率にも回収率にも入れない。「賭けが成立しなかった」が正しい扱い。
+    is_void = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (Index("ix_bets_race_type", "race_id", "bet_type"),)

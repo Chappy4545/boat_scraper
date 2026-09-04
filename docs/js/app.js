@@ -948,7 +948,11 @@ function renderBets() {
   };
   // 確定済みと未確定を分ける。日中に開いたとき最初に知りたいのは
   // 「次に買うのはどれか」であり、終わったレースと混ざっていると探せない。
-  const settledOf = b => b.is_hit === true || b.is_hit === false;
+  // ⚠️ 不成立（is_void）も「終わったもの」に含める。含めないと、当たり組番が
+  // 存在しない買い目が**永久に「買い目確定」欄に残る**（2026-09-04 びわこ9R:
+  // フライング多発で2艇しか完走せず、7賭式中5つが「不成立 ¥100」だった）。
+  // 集計には入れない（返還なので勝ちでも負けでもない）が、表示は終わらせる。
+  const settledOf = b => b.is_hit === true || b.is_hit === false || b.is_void === true;
   // 確定した買い目（締切間近で固定＝もう更新されない）を最上段に置く。
   // 「今これを買えばよい」が一目で分かるようにするため。
   const finalOf = b => !settledOf(b) && b.is_final_pick;
@@ -1053,7 +1057,11 @@ function buildBetCard(b) {
     ? `<span class="result-order">結果 ${order.map((n, i) =>
         `<span class="bn bn-${n} bn-sm">${n}</span>`).join('<span class="ord-sep">›</span>')}</span>`
     : "";
-  const hitLabel = b.is_hit === true
+  // 不成立＝全額返還。勝ちでも負けでもないので、的中率にも回収率にも入れない。
+  const hitLabel = b.is_void === true
+    ? `<span class="val-void" title="レースが不成立で全額返還されました。`
+      + `勝ちでも負けでもないので、的中率にも回収率にも入れません">↩ 返還</span>`
+    : b.is_hit === true
     ? `<span class="val-good">✓ 的中 +¥${payoutOf(b).toLocaleString()}</span>`
     : b.is_hit === false ? `<span class="val-bad">✗ 外れ</span>` : "";
   const raceTypeShort = b.race_type

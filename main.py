@@ -733,6 +733,8 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
     summary = save_day(data)
     logger.info(f"結果収集完了: {summary}")
 
+    _collect_unlisted_races(d, config, max_workers=max_workers)
+
     # 確定オッズをここで揃える。朝の update が取るのは発売直後の薄いオッズで、
     # 1通りでも欠けるとそのレースは市場確率を作れず検証に使えない。
     # ここを入れる前は 5月以降 15,774 レース中 4,732 レース（30%）しか
@@ -741,6 +743,68 @@ def cmd_collect_results(target_date: date | None = None, max_workers: int = 5):
     #（発売中の途中経過のオッズだけは遡及できない）。
     _backfill_final_odds(d, max_workers=max_workers)
     _purge_raw_cache(config)
+
+
+def _collect_unlisted_races(d: date, config: dict, max_workers: int = 5) -> int:
+    """払戻一覧に**載らなかった**レースを個別に取りに行く。
+
+    ⚠️ **不成立のレースは払戻一覧ページに出てこない。**
+    2026-09-04 びわこ9R（フライング多発で2艇しか完走せず不成立）で発覚。
+    払戻一覧は11レースしか返さず、9R が欠けていた。そのため
+    `collect_day_results` は永久にこのレースを取りに行かず、
+    「不成立 ¥100」の払戻行が入らない。
+
+    結果として、その賭式の買い目は
+      - 着順が入る前 … is_hit が埋まらず「買い目確定」欄に永久に残る
+      - 着順が入った後 … 当たり組番が無いので **False（外れ）** にされる
+    どちらも誤り。実際は**全額返還**で、勝ちでも負けでもない。
+
+    出走表があるのに払戻が1件も無いレースを拾う。数は1日十数件。
+    """
+    import pandas as pd
+    from sqlalchemy import text as _t
+
+    from src.ingestion.database import get_engine
+    from src.ingestion.saver import save_day as _save_day
+    from src.scraping.official import BoatRaceScraper as _S
+
+    with get_engine().connect() as c:
+        rows = c.execute(_t("""
+            SELECT s.code, r.race_no FROM races r
+              JOIN stadiums s ON s.id = r.stadium_id
+             WHERE r.race_date = :d
+               AND EXISTS (SELECT 1 FROM race_entries e WHERE e.race_id = r.id)
+               AND NOT EXISTS (SELECT 1 FROM payouts p WHERE p.race_id = r.id)
+             ORDER BY s.code, r.race_no"""), {"d": str(d)}).fetchall()
+    if not rows:
+        return 0
+    # 暴走よけ。丸ごと欠けている日は別の原因（収集失敗）なので、
+    # ここで数十件も取りに行くのはおかしい。
+    if len(rows) > 40:
+        logger.warning(f"払戻の無いレースが {len(rows)}件。多すぎるので個別取得は見送る")
+        return 0
+
+    logger.info(f"払戻一覧に載らなかったレース {len(rows)}件を個別に取得します")
+    frames_rr, frames_py = [], []
+    with _S(config) as sc:
+        for code, rno in rows:
+            try:
+                rr, py = sc.get_race_result_and_payouts(str(code), d, int(rno))
+                if rr is not None and not rr.empty:
+                    frames_rr.append(rr)
+                if py is not None and not py.empty:
+                    frames_py.append(py)
+            except Exception as e:                          # noqa: BLE001
+                logger.warning(f"個別取得 失敗 {code} R{rno}: {str(e)[:60]}")
+    data = {}
+    if frames_rr:
+        data["race_result"] = pd.concat(frames_rr, ignore_index=True)
+    if frames_py:
+        data["payouts"] = pd.concat(frames_py, ignore_index=True)
+    if data:
+        got = _save_day(data)
+        logger.info(f"個別取得の保存: {got}")
+    return len(rows)
 
 
 # 確定オッズを毎日そろえる賭式。
@@ -1103,16 +1167,29 @@ def cmd_judge(target_date: date | None = None):
             for p in session.query(Payout).filter(Payout.race_id.in_(race_ids))
         }
 
-        judged = 0
+        # 不成立（全額返還）の賭式。当たり組番が存在しないので、
+        # その賭式の買い目は勝ちでも負けでもない。
+        # ⚠️ これを見ないと、is_hit が永久に埋まらず画面の
+        # 「買い目確定」欄に残り続ける（2026-09-04 びわこ9R で発覚）。
+        from src.scraping.official import VOID_COMBO
+        void_types = {(r, bt) for (r, bt, cb) in payouts if cb == VOID_COMBO}
+
+        judged = voided = 0
         for bet, race in pairs:
             if race.id not in with_result:
+                continue
+            if (race.id, bet.bet_type) in void_types:
+                # 返還。is_hit は None のままにして的中率・回収率から外す。
+                bet.is_void = True
+                voided += 1
                 continue
             pay = payouts.get((race.id, bet.bet_type, bet.combination))
             bet.is_hit = pay is not None
             bet.actual_payout = pay
             judged += 1
 
-    logger.info(f"的中判定完了: {d} {judged}件")
+    logger.info(f"的中判定完了: {d} {judged}件"
+                + (f" / 不成立(返還) {voided}件" if voided else ""))
 
     # 判定後にエクスポートを更新。
     #

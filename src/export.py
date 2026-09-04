@@ -451,6 +451,19 @@ def fill_results_into_json(target_date: date) -> dict:
             judged_by_key[(s.name, r.race_no, b.bet_type, b.combination)] = (
                 bool(b.is_hit), b.actual_payout)
 
+        # 不成立（全額返還）。is_hit は埋まらないので別に拾う。
+        # ⚠️ これが無いと、その買い目は画面の「買い目確定」欄に永久に残る
+        # （2026-09-04 びわこ9R で発覚）。集計には入れない＝返還の正しい扱い。
+        void_keys = {
+            (s.name, r.race_no, b.bet_type)
+            for b, r, s in (
+                session.query(Bet, Race, Stadium)
+                .join(Race, Bet.race_id == Race.id)
+                .join(Stadium, Race.stadium_id == Stadium.id)
+                .filter(Race.race_date == d, Bet.is_void == True).all()  # noqa: E712
+            )
+        }
+
     if races_path.exists() and order_by_key:
         races = json.loads(races_path.read_text(encoding="utf-8"))
         for r in races:
@@ -473,11 +486,22 @@ def fill_results_into_json(target_date: date) -> dict:
                 b["result_order"] = order_by_key[rkey]
                 filled["bets_order"] += 1
                 changed = True
-            if b.get("is_hit") is None:
+            # ⚠️ 不成立は **is_hit が既に入っていても上書きする**。
+            # 当たり組番が存在しない賭式は「払戻が引けない＝外れ」と判定されて
+            # しまうため（2026-09-04 びわこ9R で実際に6本が False にされた）。
+            # 返還なので勝ちでも負けでもない。ここで必ず打ち消す。
+            if not b.get("is_void") and (*rkey, b.get("bet_type")) in void_keys:
+                b["is_void"] = True
+                b["is_hit"] = None
+                b["actual_payout"] = None
+                filled["bets_void"] = filled.get("bets_void", 0) + 1
+                changed = True
+            elif b.get("is_hit") is None:
                 got = judged_by_key.get((*rkey, b.get("bet_type"), b.get("combination")))
                 if got is not None:
                     b["is_hit"], b["actual_payout"] = got
                     filled["bets_judged"] += 1
+                    changed = True
                     changed = True
         if changed:
             bets_path.write_text(json.dumps(bets, ensure_ascii=False, indent=None),

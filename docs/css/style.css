@@ -1497,3 +1497,7 @@ body {
 }
 .show-more:hover{ background:var(--surface2); }
 #bet-list .show-more{ grid-column: 1 / -1; }
+
+/* 不成立（全額返還）。勝ちでも負けでもないので、的中とも外れとも別の色。
+   2026-09-04 追加。これが無いと該当の買い目が「買い目確定」欄に残り続ける。 */
+.val-void{ color:var(--muted); font-weight:600; }

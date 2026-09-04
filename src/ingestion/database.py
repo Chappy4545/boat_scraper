@@ -41,6 +41,7 @@ def init_db(config: dict | None = None) -> None:
 # 追加はメタデータ操作なので大きいDBでも一瞬で終わる。
 _EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     "odds": {"odds_upper": "FLOAT"},
+    "bets": {"is_void": "BOOLEAN"},
 }
 
 

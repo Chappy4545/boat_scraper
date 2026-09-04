@@ -47,6 +47,11 @@ _JP_DIGIT = str.maketrans("０１２３４５６７８９", "0123456789")
 # 複勝は着順に関係なく全部「外れ」**になっていた。
 # 画面で「複勝1・結果1着なのに ✗外れ」が並んで気づいた。
 # 抜けても例外にならず、原文がそのまま入るだけなので静かに壊れる。
+# 不成立（全額返還）の目印。払戻テーブルの組番が「不成立」のときに使う。
+# ⚠️ 実在しない組番なので、通常の照合には絶対に一致しない。
+# 「その賭式に当たり組番が存在しない＝返還」を表す。
+VOID_COMBO = "不成立"
+
 BET_TYPE_MAP = {
     "3連単": "sanrentan",
     "3連複": "sanrenfuku",
@@ -1189,10 +1194,26 @@ class BoatRaceScraper(BaseScraper):
             # 組み合わせの数字を抽出
             nums = combo_td.select("span.numberSet1_number")
             if not nums:
-                continue
-            combination = "-".join(n.get_text(strip=True) for n in nums)
-            if not combination:
-                continue
+                # ⚠️ 数字が無い＝**不成立**（全額返還）。捨ててはいけない。
+                #
+                # 2026-09-04 びわこ9R: フライング多発で2艇しか完走せず、
+                # 7賭式中5つが「不成立 ¥100」だった:
+                #     3連単 不成立 / 3連複 不成立 / 2連単 4-5 /
+                #     2連複 不成立 / 拡連複 不成立 / 単勝 4 / 複勝 不成立
+                # ここで捨てていたため、その賭式の買い目は**勝ち負けが
+                # 存在しないまま永久に未判定**になり、画面の「買い目確定」欄に
+                # 残り続けた。集計からは外れるので数字は正しかったが、
+                # 表示が止まったままだった。
+                #
+                # 組番の代わりに VOID_COMBO を入れて「返還」の目印として残す。
+                mark = combo_td.get_text(strip=True)
+                if not any(k in mark for k in ("不成立", "中止", "特払")):
+                    continue
+                combination = VOID_COMBO
+            else:
+                combination = "-".join(n.get_text(strip=True) for n in nums)
+                if not combination:
+                    continue
 
             # 払戻金額
             payout_text = payout_td.get_text(strip=True).replace("¥", "").replace(",", "")

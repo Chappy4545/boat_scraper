@@ -103,8 +103,27 @@ def run(d: str, shot: str | None) -> int:
     with serve(DOCS) as base, sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome")
         page = browser.new_page(viewport={"width": 420, "height": 900})
+        # ⚠️ **まだ公開されていない日**の 404 は異常ではない。
+        # 画面は既定で「今日」を読みに行くが、朝のクラウド実行より前
+        # （0時〜9時台）は today のファイルが存在しない。
+        # 2026-09-05 00:45 に実際これでテストが落ちた。時刻で結果が変わる
+        # テストは、落ちた日に「今日の変更のせい」と誤診させる。
+        # ただし**実在するはずのファイルの404は見逃さない**ので、
+        # ディスクに無いものだけを許す。
+        # コンソール側の "Failed to load resource" は URL を持たないので、
+        # 実在するファイルの404かどうかを判別できない。下の response で見る。
+        def _on_response(r) -> None:
+            if r.status < 400:
+                return
+            name = r.url.rsplit("/", 1)[-1].split("?")[0]
+            if (DOCS / "data" / name).exists():
+                # ディスクにあるのに404＝**本物の異常**（配信経路が壊れている）
+                errors.append(f"HTTP {r.status}: {name}（ファイルは存在する）")
+
+        page.on("response", _on_response)
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}")
-                if m.type in ("error", "warning") else None)
+                if m.type in ("error", "warning")
+                and "Failed to load resource" not in m.text else None)
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
 
         page.goto(f"{base}/index.html?d={d}", wait_until="networkidle")
