@@ -97,12 +97,19 @@ def test_確率の賭式が対応表を網羅している():
 # ── 賭け金の付け方（実害が出た不具合） ────────────────
 
 def test_賭け金は買う賭式だけ():
-    """⚠️ 記録だけの賭式に金額が付くと、画面上「買え」に見える。"""
+    """⚠️ 記録だけの賭式に金額が付くと、画面上「買え」に見える（08-30の事故）。
+
+    ⚠️ 以前はここで `"fixed_amount if"` という**文字列**を探していた。
+    2026-09-04 に賭式ごとの金額（`amount_for`）へ変えたら、意図は満たして
+    いるのに落ちた。**見るべきは「is_buy でないなら0」という形**であって、
+    どの関数で金額を出すかではない。文字列の grep は変更に弱い。
+    """
     src = (ROOT / "main.py").read_text(encoding="utf-8")
     i = src.index("for b in race_bets:")
     block = src[i:i + 700]
     assert "_buy" in block, "買うかどうかの判定なしに金額を付けている"
-    assert "fixed_amount if" in block, "全件に fixed_amount を付けている"
+    assert "if is_buy else 0" in block, \
+        "is_buy でないときに0を入れていない（記録のみの賭式に金額が付く）"
 
 
 def test_賭式ごとに1点だけ選ぶ():

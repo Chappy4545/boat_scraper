@@ -1165,7 +1165,16 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
     min_odds = cfg_bet["min_odds"]
     max_odds = cfg_bet["max_odds"]
     max_bets = cfg_bet["max_bets_per_race"]
-    fixed_amount = config.get("money_management", {}).get("fixed_bet_amount", 200)
+    _mm = config.get("money_management", {})
+    fixed_amount = _mm.get("fixed_bet_amount", 200)
+    # 賭式ごとの金額。無い賭式は定額に落ちる。
+    # ⚠️ 実測回収率の順序（複勝96 > 単勝93 > 拡連複89 > 2連複88）に合わせて
+    # 厚みを変えるためのもの。定額だと、いちばん悪い2連複に本数の43%が
+    # 乗ったままになる（2026-09-03 実測）。
+    _bt_amounts = _mm.get("bet_type_amounts") or {}
+
+    def amount_for(bt: str) -> int:
+        return int(_bt_amounts.get(bt, fixed_amount))
     # bet_type別の条件と、対象の買い式。これを見ていなかったため、
     # 朝の predict で見送った買い目や停止中の買い式が日中に復活していた。
     overrides = cfg_bet.get("bet_type_overrides", {})
@@ -1480,7 +1489,8 @@ def cmd_refresh_odds(target_date: date | None = None, max_workers: int = 5):
                     # 3連単などにも500円が付いていた（画面上「買え」に見える）。
                     is_buy = bool(b.pop("_buy", False))
                     new_bets.append({**common, **b,
-                                     "recommended_amount": fixed_amount if is_buy else 0,
+                                     "recommended_amount":
+                                         amount_for(b["bet_type"]) if is_buy else 0,
                                      "rule": "r5" if is_buy else "record"})
                 for b in race_blend:
                     # 検証中の候補。賭け金 0 で、画面でも別扱いにする。
