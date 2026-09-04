@@ -62,6 +62,17 @@ def main() -> None:
     workers = int(sys.argv[sys.argv.index("--workers") + 1]) if "--workers" in sys.argv else 5
     max_min = float(sys.argv[sys.argv.index("--max-minutes") + 1]) if "--max-minutes" in sys.argv else 60
 
+    # ⚠️ 走っている最中にPCが寝ると、そのまま朝まで止まる。
+    # 2026-09-03 の夜、21:46 に起動した25分のはずのバックフィルが
+    # **翌朝09:43まで**かかった（＝スリープで中断）。同じ夜の 22:30 の
+    # 夜間処理も走らず、起床後の09:44に遅れて動いた。
+    # 長く回すものは必ずこれを呼ぶこと。→ [[project_update_reliability]]
+    try:
+        from main import keep_awake
+        keep_awake()
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning(f"スリープ抑止に失敗（続行）: {str(e)[:60]}")
+
     cfg = load_config()
     init_db(cfg)
     with get_engine().connect() as conn:

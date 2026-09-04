@@ -72,6 +72,14 @@ def main() -> None:
     max_min = float(sys.argv[sys.argv.index("--max-minutes") + 1]) if "--max-minutes" in sys.argv else 60
     method, need = KINDS[bt]
 
+    # ⚠️ 走っている最中にPCが寝るとそのまま朝まで止まる（2026-09-03 実測）。
+    # 長く回すものは必ず呼ぶ。→ [[project_update_reliability]]
+    try:
+        from main import keep_awake
+        keep_awake()
+    except Exception as e:                                   # noqa: BLE001
+        logger.warning(f"スリープ抑止に失敗（続行）: {str(e)[:60]}")
+
     cfg = load_config()
     init_db(cfg)
     engine = get_engine()
